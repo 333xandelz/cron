@@ -107,6 +107,21 @@ então o `~/.claude.json` volta ao zero a cada vez. Duas saídas:
    o `instalar.sh` e o registro no escopo do usuário, que é o que ele faz.
    Se o repositório for privado, o clone precisa de credencial no ambiente.
 
+**No aparelho mesmo, via Termux.** É o único caminho em que "sempre ligado"
+é literal: o Claude Code roda no Android (Termux + npm), o `~/.claude.json`
+fica no telefone e sobrevive a tudo, então `sh instalar.sh` uma vez basta.
+Como o servidor não tem dependência nenhuma além do Python 3, ele roda no
+Termux sem `pip install`. Dois avisos que vêm da experiência alheia, não da
+minha — não testei este caminho:
+
+- o Termux precisa de `pkg install python nodejs` antes;
+- o Android 12+ mata processos em segundo plano (o *phantom process
+  killer*), o que derruba servidor stdio quando o app sai da tela. Quem
+  percorreu esse caminho desliga esse comportamento via `adb`.
+
+Nesse cenário o servidor deixa de ser "o MCP da sessão" e vira o MCP do seu
+telefone — com a vantagem de a `data/memory.json` ser sempre a mesma.
+
 ## Adicionar uma ferramenta nova
 
 Uma função com um decorador em cima. Nada além disso:
