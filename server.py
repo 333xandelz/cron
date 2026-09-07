@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -133,6 +134,38 @@ def tool_http(url, method="GET", body=None, headers=None, timeout=30):
         status = "%d %s" % (exc.code, exc.reason)
         head = "\n".join("%s: %s" % kv for kv in exc.headers.items())
     return "%s\n%s\n\n%s" % (status, head, payload)
+
+
+@tool(
+    "clima",
+    "Consulta o clima de uma cidade (via wttr.in). Use quando perguntarem "
+    "o tempo, a temperatura ou a previsao de algum lugar.",
+    {
+        "cidade": {
+            "type": "string",
+            "description": "Nome da cidade, ex: Sao Paulo, Lisboa, Tokyo",
+        },
+        "formato": {
+            "type": "string",
+            "description": "'curto' (uma linha, padrao) ou 'completo' "
+            "(previsao dos proximos dias)",
+        },
+    },
+    ["cidade"],
+)
+def tool_clima(cidade, formato="curto"):
+    destino = urllib.parse.quote(cidade.strip())
+    if formato == "completo":
+        url = "https://wttr.in/%s?lang=pt&T" % destino
+    else:
+        url = "https://wttr.in/%s?format=3&lang=pt" % destino
+    # wttr.in so devolve texto puro para clientes de terminal.
+    resposta = tool_http(url, headers={"User-Agent": "curl/8.0"})
+    cabecalho, _, corpo = resposta.partition("\n\n")
+    status = cabecalho.split("\n", 1)[0]
+    if not status.startswith("2"):
+        return "wttr.in respondeu %s\n%s" % (status, corpo.strip())
+    return corpo.strip() or resposta
 
 
 @tool(

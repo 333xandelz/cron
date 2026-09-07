@@ -23,6 +23,7 @@ aparecem.
 |---|---|
 | `run` | Executa qualquer comando de shell. É o coringa do "faça qualquer coisa". |
 | `http` | Requisição HTTP para qualquer URL (GET, POST, headers, corpo). |
+| `clima` | Tempo de uma cidade, via wttr.in. Uma linha, ou a previsão dos próximos dias. |
 | `lembrar` | Grava uma anotação em `data/memory.json`. |
 | `recordar` | Lê as anotações (sem argumento, lista todas). |
 | `esquecer` | Apaga uma anotação. |
@@ -32,10 +33,10 @@ anotação só sobrevive de verdade **depois de um commit**. Peça "commita a
 memória" ao terminar, ou trate `data/memory.json` como um arquivo comum do
 repositório.
 
-Sobre `http`: o acesso à rede passa pelo proxy do ambiente e obedece à
-política de rede escolhida quando o ambiente foi criado. Um `403 Tunnel
-connection failed` significa domínio bloqueado por essa política, não um bug
-da ferramenta.
+Sobre `http` e `clima`: o acesso à rede passa pelo proxy do ambiente e
+obedece à política de rede escolhida quando o ambiente foi criado. Um `403
+Tunnel connection failed` significa domínio bloqueado por essa política, não
+um bug da ferramenta — `clima` precisa de `wttr.in` liberado.
 
 ## Adicionar uma ferramenta nova
 
@@ -55,6 +56,11 @@ def tool_clima(cidade):
 Salve, reinicie a sessão e a ferramenta está lá. O texto da descrição é o
 que decide se o Claude usa a ferramenta na hora certa — vale escrevê-lo com
 cuidado.
+
+Foi assim que a `clima` acima nasceu; a versão que está no `server.py` só
+acrescenta o que o uso real pediu: escapar o nome da cidade na URL, devolver
+só o corpo da resposta (sem os cabeçalhos que o `http` inclui) e um
+`formato: "completo"` para a previsão dos próximos dias.
 
 ## Testar
 

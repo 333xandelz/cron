@@ -44,13 +44,42 @@ def main():
     check("initialize responde serverInfo",
           responses[1]["result"]["serverInfo"]["name"] == "faztudo")
     check("tools/list lista ferramentas",
-          len(responses[2]["result"]["tools"]) >= 5)
+          len(responses[2]["result"]["tools"]) >= 6)
+    ferramentas = {t["name"]: t for t in responses[2]["result"]["tools"]}
+    check("clima esta registrada exigindo 'cidade'",
+          ferramentas.get("clima", {}).get("inputSchema", {}).get("required")
+          == ["cidade"])
     check("toda ferramenta tem inputSchema",
           all("inputSchema" in t for t in responses[2]["result"]["tools"]))
     check("run executa comando",
           "ok" in responses[3]["result"]["content"][0]["text"])
     check("ferramenta inexistente vira erro JSON-RPC",
           "error" in responses[4])
+
+    # Sem rede: troca o http por um dublê e confere a URL montada.
+    sys.path.insert(0, os.path.dirname(SERVER))
+    import server
+
+    chamadas = []
+
+    def http_falso(url, **kwargs):
+        chamadas.append((url, kwargs))
+        return "200 OK\nContent-Type: text/plain\n\nSao Paulo: 25 C\n"
+
+    original = server.tool_http
+    server.tool_http = http_falso
+    try:
+        curto = server.tool_clima("Sao Paulo")
+        completo = server.tool_clima("Sao Paulo", formato="completo")
+    finally:
+        server.tool_http = original
+
+    check("clima devolve so o corpo da resposta", curto == "Sao Paulo: 25 C")
+    check("clima escapa o nome da cidade na URL",
+          "Sao%20Paulo" in chamadas[0][0])
+    check("clima usa format=3 por padrao", "format=3" in chamadas[0][0])
+    check("clima completo pede a previsao", "format=3" not in completo
+          and "format=3" not in chamadas[1][0])
 
     if failures:
         print("\n%d teste(s) falharam." % len(failures))
