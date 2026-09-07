@@ -15,7 +15,9 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
+import string
 import subprocess
 import sys
 import time
@@ -36,7 +38,33 @@ except ImportError:  # pragma: no cover
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "faztudo"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
+
+# O protocolo deixa o servidor mandar orientacao junto do initialize. E o
+# lugar de dizer o que nenhuma descricao de ferramenta sozinha diz: como as
+# pecas se encaixam.
+INSTRUCOES = """O faztudo e a memoria e as maos do usuario neste aparelho.
+Fale portugues com ele.
+
+Tres habitos que mudam o resultado:
+
+1. ABRA olhando o que ficou para tras. 'pendencias' no comeco da conversa
+   evita repetir o que ja foi combinado.
+2. GUARDE o que aparecer. Todo fato duravel — uma preferencia, um numero, uma
+   decisao — vai em 'lembrar'; o que tem hora marcada vai em 'agendar'. Nao
+   pergunte se pode: guardar e barato, esquecer e caro.
+3. FECHE com 'sincronizar'. O que nao foi commitado morre com a sessao. Faca
+   isso sem ser pedido, depois de agendar ou anotar algo que importa.
+
+Procurando algo do passado: 'recordar' se souber o nome, 'buscar' se nao
+souber — ela varre anotacoes e tarefas pelo conteudo.
+
+Mexendo na tela do celular: SEMPRE 'tela' antes de 'tocar', para saber o que
+existe em vez de adivinhar coordenada. Toque pelo texto do elemento. Se algo
+falhar, 'celular' diz o que esta faltando e como resolver.
+
+'run' e a ultima opcao: se existe ferramenta especifica, ela ja trata os
+erros e o formato melhor do que um comando solto."""
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(ROOT, "data")
@@ -326,6 +354,142 @@ def _linha_tarefa(tarefa, agora):
     )
 
 
+@tool(
+    "buscar",
+    "Procura em tudo que voce ja guardou — anotacoes e tarefas — por um "
+    "pedaco de texto. Use quando a pessoa se referir a algo do passado sem "
+    "dizer o nome exato: 'o que eu falei sobre o dentista?', 'aquilo do "
+    "carro'. Prefira esta a 'recordar' quando nao souber a chave certa.",
+    {
+        "termo": {"type": "string", "description": "Palavra ou pedaco de frase"},
+        "onde": {
+            "type": "string",
+            "description": "'tudo' (padrao), 'anotacoes' ou 'tarefas'",
+        },
+    },
+    ["termo"],
+)
+def tool_buscar(termo, onde="tudo"):
+    if onde not in ("tudo", "anotacoes", "tarefas"):
+        raise ValueError("onde aceita: tudo, anotacoes, tarefas")
+    procurado = _sem_acento(termo).strip()
+    if not procurado:
+        raise ValueError("preciso de um termo para procurar")
+
+    achados = []
+
+    if onde in ("tudo", "anotacoes"):
+        for chave, item in sorted(_load_memory().items()):
+            etiquetas = item.get("etiquetas") or []
+            campos = [
+                (chave, 3),                        # a chave vale mais
+                (" ".join(etiquetas), 2),
+                (item.get("valor", ""), 1),
+            ]
+            peso = max(
+                (p for texto, p in campos if procurado in _sem_acento(texto)), default=0
+            )
+            if peso:
+                achados.append((peso, "anotacao", chave, item.get("valor", ""), etiquetas))
+
+    if onde in ("tudo", "tarefas"):
+        agora = _agora()
+        for tarefa in _load_tarefas()["tarefas"]:
+            if procurado in _sem_acento(tarefa["o_que"]):
+                achados.append((
+                    2, "tarefa", "[%d]" % tarefa["id"],
+                    "%s — %s" % (_formatar(tarefa["quando"], agora), tarefa["o_que"]),
+                    [tarefa["repetir"]] if tarefa.get("repetir") else [],
+                ))
+
+    if not achados:
+        return "Nada encontrado com '%s'." % termo
+
+    achados.sort(key=lambda a: (-a[0], a[2]))
+    linhas = []
+    for _, tipo, chave, valor, etiquetas in achados[:20]:
+        marca = "  #%s" % " #".join(etiquetas) if etiquetas else ""
+        resumo = valor if len(valor) <= 160 else valor[:157] + "..."
+        linhas.append("%s %s: %s%s" % (
+            "*" if tipo == "tarefa" else "-", chave, resumo, marca))
+    extra = "\n(+%d resultados)" % (len(achados) - 20) if len(achados) > 20 else ""
+    return "\n".join(linhas) + extra
+
+
+@tool(
+    "quando",
+    "Resolve uma data dita em portugues e diz em que dia cai e quanto falta. "
+    "Use para 'que dia cai a sexta que vem?', 'quantos dias ate o Natal?', "
+    "'faz quanto tempo desde 01/01?'. Nao agenda nada — para marcar um "
+    "lembrete, use 'agendar'.",
+    {
+        "data": {
+            "type": "string",
+            "description": "'sexta', '25/12', 'em 3 semanas', '2026-12-25'",
+        }
+    },
+    ["data"],
+)
+def tool_quando(data):
+    agora = _agora()
+    momento = _interpretar_quando(data, agora)
+    distancia = momento - agora
+    dias = distancia.days
+    horas = distancia.seconds // 3600
+
+    if distancia.total_seconds() < 0:
+        passado = agora - momento
+        if passado.days:
+            quanto = "faz %d dia(s)" % passado.days
+        else:
+            quanto = "faz %d hora(s)" % (passado.seconds // 3600)
+    elif dias == 0:
+        quanto = "daqui a %dh%02d" % (horas, (distancia.seconds % 3600) // 60)
+    elif dias == 1:
+        quanto = "amanha"
+    else:
+        quanto = "daqui a %d dias" % dias
+
+    return "%s, %s — %s" % (
+        NOMES_DIAS[momento.weekday()],
+        momento.strftime("%d/%m/%Y %H:%M"),
+        quanto,
+    )
+
+
+@tool(
+    "senha",
+    "Gera uma senha aleatoria segura, sem sair do aparelho. Use quando "
+    "pedirem uma senha nova para algum cadastro.",
+    {
+        "tamanho": {"type": "number", "description": "Quantos caracteres (padrao 20)"},
+        "tipo": {
+            "type": "string",
+            "description": "'forte' (padrao, com simbolos), 'simples' (so letras "
+            "e numeros) ou 'legivel' (sem caracteres que se confundem)",
+        },
+    },
+)
+def tool_senha(tamanho=20, tipo="forte"):
+    tamanho = int(tamanho)
+    if not 8 <= tamanho <= 128:
+        raise ValueError("tamanho entre 8 e 128; pedido: %d" % tamanho)
+
+    alfabetos = {
+        "forte": string.ascii_letters + string.digits + "!@#$%&*-_=+?",
+        "simples": string.ascii_letters + string.digits,
+        # Sem 0/O, 1/l/I: para quem vai digitar olhando.
+        "legivel": "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789",
+    }
+    if tipo not in alfabetos:
+        raise ValueError("tipo aceita: %s" % ", ".join(alfabetos))
+    alfabeto = alfabetos[tipo]
+    senha = "".join(secrets.choice(alfabeto) for _ in range(tamanho))
+    return "%s\n(%d caracteres, %s — gerada aqui, nao passou por lugar nenhum)" % (
+        senha, tamanho, tipo,
+    )
+
+
 # ------------------------------------------------------------------ celular
 
 # Duas camadas, com permissoes bem diferentes:
@@ -514,8 +678,11 @@ def _procurar(elementos, alvo):
 
 @tool(
     "run",
-    "Executa um comando de shell e devolve stdout/stderr. A ferramenta "
-    "coringa: se nao existe uma ferramenta especifica, use esta.",
+    "Executa um comando de shell e devolve stdout/stderr. E a ULTIMA "
+    "opcao: se existe ferramenta especifica para o que voce quer "
+    "(calcular, clima, tela, agendar...), use ela — trata erro e "
+    "formato melhor que um comando solto. Esta serve para o que nao "
+    "tem ferramenta.",
     {
         "command": {"type": "string", "description": "Comando de shell"},
         "cwd": {"type": "string", "description": "Diretorio de trabalho"},
@@ -545,7 +712,9 @@ def tool_run(command, cwd=None, timeout=120):
 
 @tool(
     "http",
-    "Faz uma requisicao HTTP e devolve status, cabecalhos e corpo.",
+    "Faz uma requisicao HTTP crua e devolve status, cabecalhos e corpo. "
+    "Para clima, cambio ou noticias existem ferramentas proprias, que "
+    "ja tratam o formato — use esta so para uma API sem ferramenta.",
     {
         "url": {"type": "string", "description": "URL completa (com https://)"},
         "method": {"type": "string", "description": "GET, POST, PUT, DELETE..."},
@@ -761,8 +930,9 @@ def _achar_fuso(lugar):
 
 @tool(
     "hora",
-    "Diz que horas sao agora, em UTC e no lugar pedido. Use para 'que horas "
-    "sao em Tokyo', diferenca de fuso, ou so a data de hoje.",
+    "Que horas sao AGORA, em UTC e no lugar pedido. Use para 'que horas "
+    "sao em Tokyo' ou diferenca de fuso. Para resolver uma data futura "
+    "('que dia cai a sexta?'), a ferramenta e 'quando'.",
     {
         "lugar": {
             "type": "string",
@@ -855,7 +1025,10 @@ def tool_noticias(tema=None, quantidade=8):
 @tool(
     "agendar",
     "Marca um lembrete ou tarefa para uma data/hora. Use sempre que "
-    "pedirem para lembrar de algo, marcar, agendar ou avisar depois.",
+    "pedirem para lembrar de algo, marcar, agendar ou avisar depois. "
+    "So para o que TEM hora ou data — um fato sem prazo (preferencia, "
+    "numero, decisao) vai em 'lembrar'. Depois de agendar algo que "
+    "importa, chame 'sincronizar'.",
     {
         "o_que": {"type": "string", "description": "O que lembrar"},
         "quando": {
@@ -939,8 +1112,9 @@ def tool_pendencias(periodo="semana"):
 
 @tool(
     "concluir",
-    "Marca uma tarefa como feita. Se ela se repete, ja reagenda a proxima "
-    "ocorrencia em vez de sumir.",
+    "Marca uma tarefa como feita. Use quando disserem que fizeram algo ('ja "
+    "tomei o remedio', 'paguei'). Se a tarefa se repete, ja reagenda a "
+    "proxima em vez de sumir — por isso prefira esta a 'cancelar'.",
     {"id": {"type": "number", "description": "Numero da tarefa (vem de 'pendencias')"}},
     ["id"],
 )
@@ -966,7 +1140,9 @@ def tool_concluir(id):
 
 @tool(
     "cancelar",
-    "Apaga uma tarefa agendada, inclusive as que se repetem.",
+    "Apaga uma tarefa agendada, inclusive as que se repetem. Use quando "
+    "desistirem de algo ('nao precisa mais'). Se a tarefa foi FEITA, o "
+    "certo e 'concluir' — ela reagenda o que se repete, esta nao.",
     {"id": {"type": "number", "description": "Numero da tarefa"}},
     ["id"],
 )
@@ -990,8 +1166,10 @@ def _git(*args):
 @tool(
     "sincronizar",
     "Salva no git o que foi anotado e agendado, para sobreviver ao fim da "
-    "sessao. Use depois de agendar ou lembrar de algo importante, e sempre "
-    "que a conversa estiver acabando.",
+    "sessao. Chame por conta propria depois de agendar ou anotar algo "
+    "que importa, e sempre que a conversa estiver acabando — sem isso, "
+    "tudo que foi guardado nesta sessao se perde. Nao precisa pedir "
+    "permissao para chamar.",
     {
         "mensagem": {"type": "string", "description": "Mensagem do commit (opcional)"},
         "enviar": {
@@ -1071,43 +1249,76 @@ def tool_briefing(cidade=None, moeda="USD"):
 
 @tool(
     "lembrar",
-    "Guarda uma anotacao que sobrevive ao fim da sessao (fica em "
-    "data/memory.json, versionado no git).",
+    "Guarda um fato para depois: uma preferencia, um numero, uma decisao, "
+    "algo que a pessoa disse sobre si. Use para o que NAO tem hora marcada — "
+    "se tem data ou hora, o certo e 'agendar'. Chame sem medo: e barato, e "
+    "o que nao foi guardado se perde no fim da sessao.",
     {
-        "chave": {"type": "string", "description": "Nome curto da anotacao"},
+        "chave": {"type": "string", "description": "Nome curto, para achar depois"},
         "valor": {"type": "string", "description": "Conteudo a guardar"},
+        "etiquetas": {
+            "type": "string",
+            "description": "Assuntos separados por virgula, ex: 'saude, medico'",
+        },
     },
     ["chave", "valor"],
 )
-def tool_lembrar(chave, valor):
+def tool_lembrar(chave, valor, etiquetas=None):
     memory = _load_memory()
-    memory[chave] = {"valor": valor, "atualizado_em": time.strftime("%Y-%m-%d %H:%M:%S")}
+    marcas = [e.strip() for e in (etiquetas or "").split(",") if e.strip()]
+    ja_existia = chave in memory
+    memory[chave] = {
+        "valor": valor,
+        "etiquetas": marcas,
+        "atualizado_em": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
     _save_memory(memory)
-    return "Guardado em '%s'." % chave
+    return "%s '%s'%s. Use 'sincronizar' para nao perder." % (
+        "Atualizado" if ja_existia else "Guardado em",
+        chave,
+        " (#%s)" % " #".join(marcas) if marcas else "",
+    )
 
 
 @tool(
     "recordar",
-    "Le anotacoes guardadas. Sem 'chave', lista todas.",
+    "Le uma anotacao pelo nome; sem 'chave', lista todas. Se o nome nao "
+    "bater exatamente, procura por aproximacao. Para varrer tambem as "
+    "tarefas, ou procurar pelo conteudo, use 'buscar'.",
     {"chave": {"type": "string", "description": "Nome da anotacao"}},
 )
 def tool_recordar(chave=None):
     memory = _load_memory()
     if not memory:
         return "Nenhuma anotacao guardada ainda."
+
     if chave is None:
-        return "\n".join(
-            "- %s (%s): %s" % (k, v["atualizado_em"], v["valor"])
-            for k, v in sorted(memory.items())
-        )
-    if chave not in memory:
-        return "Nao existe anotacao '%s'." % chave
-    return memory[chave]["valor"]
+        linhas = []
+        for k, v in sorted(memory.items()):
+            marcas = v.get("etiquetas") or []
+            linhas.append("- %s (%s)%s: %s" % (
+                k, v["atualizado_em"],
+                "  #" + " #".join(marcas) if marcas else "", v["valor"]))
+        return "\n".join(linhas)
+
+    if chave in memory:
+        return memory[chave]["valor"]
+
+    # Nome nao bateu: tenta por aproximacao antes de dizer que nao existe.
+    procurado = _sem_acento(chave).strip()
+    parecidas = [k for k in sorted(memory) if procurado in _sem_acento(k)]
+    if len(parecidas) == 1:
+        return "(achei por aproximacao: '%s')\n%s" % (
+            parecidas[0], memory[parecidas[0]]["valor"])
+    if parecidas:
+        return "Nao existe '%s'. Parecidas: %s" % (chave, ", ".join(parecidas))
+    return "Nao existe anotacao '%s'. Tente 'buscar' pelo conteudo." % chave
 
 
 @tool(
     "esquecer",
-    "Apaga uma anotacao guardada.",
+    "Apaga uma anotacao guardada. Use quando a pessoa disser que algo mudou "
+    "e nao vale mais. Para tarefa marcada, quem apaga e 'cancelar'.",
     {"chave": {"type": "string", "description": "Nome da anotacao"}},
     ["chave"],
 )
@@ -1156,9 +1367,10 @@ def tool_celular():
 
 @tool(
     "tela",
-    "Le o que esta na tela do celular agora e devolve os elementos com as "
-    "coordenadas. Use SEMPRE antes de tocar em algo, para saber o que existe "
-    "e onde esta.",
+    "Le o que esta na tela do celular agora e devolve cada elemento com sua "
+    "coordenada. Chame SEMPRE antes de 'tocar', e de novo depois de cada "
+    "acao que muda a tela — a tela de antes nao vale mais depois de um "
+    "toque.",
     {"filtro": {"type": "string", "description": "Mostrar so o que contiver este texto"}},
 )
 def tool_tela(filtro=None):
@@ -1226,8 +1438,9 @@ def tool_tocar(texto=None, x=None, y=None, segurar=False):
 
 @tool(
     "digitar",
-    "Digita um texto no campo que estiver em foco. Toque no campo antes. "
-    "Com 'enviar', aperta Enter no fim.",
+    "Digita um texto no campo que estiver em foco. Use depois de 'tocar' num "
+    "campo de texto — sem foco, o texto se perde. Com 'enviar', aperta "
+    "Enter no fim, que e o que manda a mensagem na maioria dos apps.",
     {
         "texto": {"type": "string", "description": "O que digitar"},
         "enviar": {"type": "boolean", "description": "Apertar Enter depois (padrao: nao)"},
@@ -1252,7 +1465,9 @@ def tool_digitar(texto, enviar=False):
 @tool(
     "botao",
     "Aperta um botao do aparelho: home, voltar, recentes, enter, apagar, "
-    "buscar, tela (liga/desliga), volume+, volume-, play.",
+    "buscar, tela (liga/desliga), volume+, volume-, play. Use para sair "
+    "de um app, voltar uma tela ou confirmar um campo — e mais confiavel "
+    "que procurar o botao na tela.",
     {"qual": {"type": "string", "description": "Nome do botao"}},
     ["qual"],
 )
@@ -1303,7 +1518,9 @@ def tool_deslizar(direcao, duracao=300):
 
 @tool(
     "captura",
-    "Tira uma foto da tela e salva num arquivo, para voce poder olhar.",
+    "Tira uma foto da tela e salva num arquivo. Use quando 'tela' nao bastar "
+    "— imagem, layout, algo visual que a lista de elementos nao descreve. "
+    "Para saber onde tocar, 'tela' e melhor: ela da as coordenadas.",
     {"nome": {"type": "string", "description": "Nome do arquivo (opcional)"}},
 )
 def tool_captura(nome=None):
@@ -1323,8 +1540,9 @@ def tool_captura(nome=None):
 
 @tool(
     "abrir",
-    "Abre um aplicativo pelo nome ou um link no celular. Ex: 'whatsapp', "
-    "'instagram', 'https://...'.",
+    "Abre um aplicativo pelo nome ou um link no celular. Use para 'abre o "
+    "whatsapp', 'entra no instagram', 'abre esse link'. Depois de abrir, "
+    "chame 'tela' para ver onde o app parou.",
     {"o_que": {"type": "string", "description": "Nome do app ou URL completa"}},
     ["o_que"],
 )
@@ -1363,8 +1581,9 @@ def tool_abrir(o_que):
 
 @tool(
     "notificar",
-    "Mostra uma notificacao no celular. Use para avisar de algo sem "
-    "interromper o que a pessoa esta fazendo.",
+    "Mostra uma notificacao no celular AGORA. Use para avisar de algo sem "
+    "interromper. Nao serve para o futuro: para avisar mais tarde, "
+    "quem marca e 'agendar'.",
     {
         "titulo": {"type": "string", "description": "Titulo da notificacao"},
         "texto": {"type": "string", "description": "Corpo (opcional)"},
@@ -1381,7 +1600,9 @@ def tool_notificar(titulo, texto=None):
 
 @tool(
     "falar",
-    "Fala um texto em voz alta no celular.",
+    "Fala um texto em voz alta no celular. Use quando pedirem para ler algo "
+    "em voz alta, ou quando a pessoa estiver com as maos ocupadas — "
+    "dirigindo, cozinhando.",
     {"texto": {"type": "string", "description": "O que falar"}},
     ["texto"],
 )
@@ -1392,7 +1613,9 @@ def tool_falar(texto):
 
 @tool(
     "area_transferencia",
-    "Le ou escreve a area de transferencia do celular. Sem argumento, le.",
+    "Le ou escreve a area de transferencia do celular. Use para 'copia isso', "
+    "'o que eu copiei?', ou para passar um texto longo a um app sem "
+    "digitar caractere por caractere.",
     {"texto": {"type": "string", "description": "Texto a copiar (omita para ler)"}},
 )
 def tool_area_transferencia(texto=None):
@@ -1404,8 +1627,10 @@ def tool_area_transferencia(texto=None):
 
 @tool(
     "enviar_sms",
-    "Envia um SMS de verdade pelo chip do celular. Confirme o numero antes: "
-    "isto sai na hora e nao tem como desfazer.",
+    "Envia um SMS de verdade pelo chip do celular. Use quando pedirem para "
+    "mandar mensagem de texto a um numero. Confirme o numero com a "
+    "pessoa antes de chamar: isto sai na hora, custa credito e nao tem "
+    "como desfazer.",
     {
         "numero": {"type": "string", "description": "Numero de destino"},
         "texto": {"type": "string", "description": "Mensagem"},
@@ -1461,6 +1686,7 @@ def _handle(method, params):
             "protocolVersion": client_version,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+            "instructions": INSTRUCOES,
         }
 
     if method == "ping":

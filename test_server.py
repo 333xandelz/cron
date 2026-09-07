@@ -81,7 +81,7 @@ def testa_protocolo():
     check("initialize ecoa a versao do cliente",
           r[1]["result"]["protocolVersion"] == "2025-06-18")
     check("ping responde vazio", r[5]["result"] == {})
-    check("tools/list lista ferramentas", len(r[2]["result"]["tools"]) >= 28)
+    check("tools/list lista ferramentas", len(r[2]["result"]["tools"]) >= 31)
     check("toda ferramenta tem inputSchema",
           all("inputSchema" in t for t in r[2]["result"]["tools"]))
     check("tools/list nao vaza a funcao python",
@@ -536,6 +536,113 @@ def testa_celular_ausente():
         shutil.rmtree(vazio, ignore_errors=True)
 
 
+def testa_semantica():
+    print("\nSemantica (o que o cliente le para escolher a ferramenta):")
+    ferramentas = {nome: spec for nome, spec in server.TOOLS.items()}
+
+    check("toda descricao passa de 60 caracteres",
+          all(len(s["description"]) > 60 for s in ferramentas.values()))
+    orientacao = ("Use", "use ", "Chame", "Prefira", "Para ", "prefira")
+    sem_orientacao = [n for n, s in ferramentas.items()
+                      if not any(p in s["description"] for p in orientacao)]
+    check("toda descricao diz quando escolher a ferramenta (faltam: %s)"
+          % (", ".join(sem_orientacao) or "nenhuma"), not sem_orientacao)
+    check("todo argumento tem descricao",
+          all(p.get("description") for s in ferramentas.values()
+              for p in s["inputSchema"]["properties"].values()))
+    check("nenhum obrigatorio fora das propriedades",
+          all(set(s["inputSchema"]["required"]) <= set(s["inputSchema"]["properties"])
+              for s in ferramentas.values()))
+
+    def diz(nome, trecho):
+        return trecho in ferramentas[nome]["description"]
+
+    check("'run' se declara ultima opcao", diz("run", "ULTIMA"))
+    check("'lembrar' aponta para 'agendar' quando ha hora", diz("lembrar", "agendar"))
+    check("'agendar' aponta para 'lembrar' quando nao ha", diz("agendar", "lembrar"))
+    check("'hora' aponta para 'quando' para datas futuras", diz("hora", "quando"))
+    check("'notificar' distingue agora de depois", diz("notificar", "agendar"))
+    check("'tela' manda reler depois de cada acao", diz("tela", "depois de cada"))
+    check("'recordar' aponta para 'buscar'", diz("recordar", "buscar"))
+    check("'buscar' explica quando prefere-la a 'recordar'", diz("buscar", "recordar"))
+    check("'http' desvia para as ferramentas prontas", diz("http", "ferramentas proprias"))
+
+
+def testa_instrucoes():
+    print("\nInstrucoes do servidor (entregues no handshake):")
+    pedido = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                         "params": {}}) + "\n"
+    proc = subprocess.run([sys.executable, SERVER], input=pedido,
+                          capture_output=True, text=True, timeout=60)
+    resultado = json.loads(proc.stdout.splitlines()[0])["result"]
+    instrucoes = resultado.get("instructions", "")
+
+    check("initialize entrega instructions", len(instrucoes) > 200)
+    check("manda falar portugues", "portugues" in instrucoes)
+    check("ensina a abrir a conversa", "pendencias" in instrucoes)
+    check("ensina a fechar sincronizando", "sincronizar" in instrucoes)
+    check("ensina a ler a tela antes de tocar",
+          "tela" in instrucoes and "tocar" in instrucoes)
+    check("versao subiu com as ferramentas novas",
+          resultado["serverInfo"]["version"] != "0.1.0")
+
+
+def testa_ferramentas_novas():
+    print("\nFerramentas novas (buscar, quando, senha):")
+    import tempfile
+    pasta = tempfile.mkdtemp()
+    guardado = (server.MEMORY_FILE, server.TAREFAS_FILE, server.DATA_DIR)
+    server.DATA_DIR = pasta
+    server.MEMORY_FILE = os.path.join(pasta, "memory.json")
+    server.TAREFAS_FILE = os.path.join(pasta, "tarefas.json")
+    try:
+        server.tool_lembrar("dentista", "Dr. Almeida, clinica na Boa Viagem",
+                            etiquetas="saude, medico")
+        server.tool_lembrar("pneu", "205/55 R16")
+        server.tool_agendar("levar o carro na oficina", "sexta 10h")
+
+        check("lembrar guarda etiquetas",
+              "saude" in json.load(open(server.MEMORY_FILE, encoding="utf-8"))
+              ["dentista"]["etiquetas"])
+        check("recordar acha por aproximacao",
+              "Boa Viagem" in server.tool_recordar("dentist"))
+        check("recordar sem nada parecido manda buscar",
+              "buscar" in server.tool_recordar("xyzabc"))
+
+        check("buscar acha pelo conteudo",
+              "dentista" in server.tool_buscar("boa viagem"))
+        check("buscar acha pela etiqueta", "dentista" in server.tool_buscar("saude"))
+        check("buscar atravessa anotacoes e tarefas",
+              "oficina" in server.tool_buscar("carro"))
+        check("buscar restrito a anotacoes ignora tarefas",
+              "oficina" not in server.tool_buscar("carro", onde="anotacoes"))
+        check("buscar sem resultado diz isso",
+              "Nada encontrado" in server.tool_buscar("zzzznaoexiste"))
+
+        resposta = server.tool_quando("sexta")
+        check("quando diz o dia da semana e a distancia",
+              "sexta" in resposta and "daqui a" in resposta)
+        check("quando entende data no passado", "faz" in server.tool_quando("em 0 dias")
+              or "daqui" in server.tool_quando("em 0 dias"))
+
+        senha = server.tool_senha(24).split("\n")[0]
+        check("senha tem o tamanho pedido", len(senha) == 24)
+        check("duas senhas seguidas sao diferentes",
+              server.tool_senha(24).split("\n")[0] != senha)
+        legivel = server.tool_senha(30, "legivel").split("\n")[0]
+        check("senha legivel evita caracteres ambiguos",
+              not set(legivel) & set("0O1lI"))
+        try:
+            server.tool_senha(4)
+            ok = False
+        except ValueError:
+            ok = True
+        check("senha curta demais e recusada", ok)
+    finally:
+        server.MEMORY_FILE, server.TAREFAS_FILE, server.DATA_DIR = guardado
+        shutil.rmtree(pasta, ignore_errors=True)
+
+
 def testa_memoria():
     print("\nMemoria (lembrar/recordar/esquecer):")
     antes = server._load_memory()
@@ -580,6 +687,9 @@ def main():
     testa_sincronizar()
     testa_celular()
     testa_celular_ausente()
+    testa_semantica()
+    testa_instrucoes()
+    testa_ferramentas_novas()
     testa_memoria()
     testa_cli()
     if FALHAS:

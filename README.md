@@ -46,9 +46,12 @@ aparecem.
 | `falar` | Fala um texto em voz alta. |
 | `area_transferencia` | Lê ou escreve a área de transferência. |
 | `enviar_sms` | Manda um SMS de verdade pelo chip. |
-| `lembrar` | Grava uma anotação em `data/memory.json`. |
-| `recordar` | Lê as anotações (sem argumento, lista todas). |
+| `lembrar` | Grava um fato, com etiquetas opcionais. |
+| `recordar` | Lê uma anotação pelo nome — e acha por aproximação se o nome não bater. |
+| `buscar` | Procura pelo conteúdo, atravessando anotações **e** tarefas. |
 | `esquecer` | Apaga uma anotação. |
+| `quando` | Resolve uma data: "que dia cai a sexta?", "quantos dias até o Natal?". |
+| `senha` | Gera uma senha segura, sem sair do aparelho. |
 
 Só três saem para a internet — `clima`, `cotacao` e `noticias`. A agenda
 inteira funciona offline.
@@ -62,6 +65,32 @@ Sobre `lembrar`: o container é descartado quando a sessão termina, então a
 anotação só sobrevive de verdade **depois de um commit**. Peça "commita a
 memória" ao terminar, ou trate `data/memory.json` como um arquivo comum do
 repositório.
+
+## A semântica: como o Claude escolhe entre 31 ferramentas
+
+Com esse tamanho, o modo de falhar deixa de ser bug e passa a ser **escolha
+errada** — usar `run` onde havia ferramenta pronta, `lembrar` onde era
+`agendar`. Duas defesas:
+
+**Cada descrição diz para onde ir quando não é o caso dela.** `lembrar`
+aponta para `agendar` quando há hora marcada; `agendar` aponta de volta;
+`hora` manda usar `quando` para datas futuras; `concluir` explica por que é
+melhor que `cancelar` numa tarefa que se repete; `run` se declara última
+opção. Isso é testado: a suíte falha se um par confundível parar de se
+referenciar.
+
+**O `initialize` carrega instruções para o conjunto todo.** O protocolo MCP
+tem um campo `instructions` que quase ninguém usa — é onde cabe o que
+nenhuma ferramenta isolada consegue dizer:
+
+```
+1. ABRA olhando o que ficou para trás ('pendencias').
+2. GUARDE o que aparecer — guardar é barato, esquecer é caro.
+3. FECHE com 'sincronizar'. O que não foi commitado morre com a sessão.
+```
+
+Na prática funciona: num teste, o Claude chamou `sincronizar` por conta
+própria ao terminar, sem ninguém pedir.
 
 ## A agenda, e o problema de o container morrer
 
