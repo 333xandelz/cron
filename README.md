@@ -34,13 +34,29 @@ aparecem.
 | `cancelar` | Apaga uma tarefa. |
 | `briefing` | Hora, pendências, clima, câmbio e manchetes numa tacada só. |
 | `sincronizar` | Salva agenda e anotações no git, para sobreviverem à sessão. |
+| `celular` | Diagnóstico: o que dá para fazer no aparelho e o que falta. |
+| `tela` | Lê o que está na tela agora, com as coordenadas de cada elemento. |
+| `tocar` | Toca num elemento pelo texto ("Enviar") ou por coordenada. |
+| `digitar` | Escreve no campo em foco, com ou sem Enter no fim. |
+| `deslizar` | Rola a tela: cima, baixo, esquerda, direita. |
+| `botao` | Home, voltar, recentes, enter, volume, ligar/desligar tela. |
+| `captura` | Foto da tela salva em arquivo. |
+| `abrir` | Abre um app pelo nome ou um link. |
+| `notificar` | Notificação no aparelho. |
+| `falar` | Fala um texto em voz alta. |
+| `area_transferencia` | Lê ou escreve a área de transferência. |
+| `enviar_sms` | Manda um SMS de verdade pelo chip. |
 | `lembrar` | Grava uma anotação em `data/memory.json`. |
 | `recordar` | Lê as anotações (sem argumento, lista todas). |
 | `esquecer` | Apaga uma anotação. |
 
-Só três saem para a internet — `clima`, `cotacao` e `noticias`. Todo o resto
-funciona offline, inclusive a agenda inteira. Leia a seção **Rede** antes de
-contar com as três.
+Só três saem para a internet — `clima`, `cotacao` e `noticias`. A agenda
+inteira funciona offline.
+
+As doze ferramentas de celular só funcionam com o servidor rodando **dentro
+do aparelho**, via Termux — num container na nuvem não há tela para tocar.
+O roteiro completo está em [CELULAR.md](CELULAR.md); a ferramenta `celular`
+diz o que falta a qualquer momento.
 
 Sobre `lembrar`: o container é descartado quando a sessão termina, então a
 anotação só sobrevive de verdade **depois de um commit**. Peça "commita a
@@ -219,6 +235,8 @@ para fora (`clima`) é testada com um dublê no lugar do `http`.
 - `server.py` — o servidor (protocolo + ferramentas)
 - `test_server.py` — testes
 - `instalar.sh` — registra o servidor para todos os seus projetos
+- `preparar-celular.sh` — instala e configura tudo no Termux
+- `CELULAR.md` — como o Claude passa a operar o aparelho
 - `.mcp.json` — registra o servidor para este projeto
 - `.claude/settings.json` — marca o servidor como habilitado
 - `data/memory.json` — as anotações do `lembrar`

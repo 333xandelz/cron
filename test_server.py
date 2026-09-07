@@ -81,7 +81,7 @@ def testa_protocolo():
     check("initialize ecoa a versao do cliente",
           r[1]["result"]["protocolVersion"] == "2025-06-18")
     check("ping responde vazio", r[5]["result"] == {})
-    check("tools/list lista ferramentas", len(r[2]["result"]["tools"]) >= 16)
+    check("tools/list lista ferramentas", len(r[2]["result"]["tools"]) >= 28)
     check("toda ferramenta tem inputSchema",
           all("inputSchema" in t for t in r[2]["result"]["tools"]))
     check("tools/list nao vaza a funcao python",
@@ -357,6 +357,185 @@ def testa_sincronizar():
         shutil.rmtree(pasta, ignore_errors=True)
 
 
+TELA_FALSA = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node class="android.widget.FrameLayout" bounds="[0,0][1080,2400]">
+    <node text="Conversas" class="android.widget.TextView" clickable="false" bounds="[40,120][400,200]"/>
+    <node text="Ana Paula" class="android.widget.TextView" clickable="true" bounds="[0,300][1080,460]"/>
+    <node text="Joao" class="android.widget.TextView" clickable="true" bounds="[0,460][1080,620]"/>
+    <node text="" content-desc="Nova conversa" class="android.widget.ImageButton" clickable="true" bounds="[880,2100][1040,2260]"/>
+    <node text="" class="android.widget.EditText" clickable="true" bounds="[40,2280][900,2380]"/>
+    <node text="Enviar" class="android.widget.Button" clickable="true" bounds="[920,2280][1060,2380]"/>
+  </node>
+</hierarchy>"""
+
+ADB_FALSO = r"""#!/bin/sh
+echo "$@" >> __LOG__
+case "$*" in
+  "devices") printf 'List of devices attached\nlocalhost:5555\tdevice\n';;
+  *"exec-out cat"*) cat __XML__;;
+  *"exec-out screencap"*) printf '\211PNG\r\n\032\n fingido';;
+  *"wm size"*) echo "Physical size: 1080x2400";;
+  *"pm list packages"*) echo "package:com.exemplo.notas"; echo "package:com.whatsapp";;
+  *) echo "";;
+esac
+exit 0
+"""
+
+TERMUX_FALSO = r"""#!/bin/sh
+echo "__NOME__ $@" >> __LOG__
+echo copiado
+exit 0
+"""
+
+
+def android_falso():
+    """Monta um 'adb' e comandos termux de mentira. Devolve (pasta, log)."""
+    import stat
+    import tempfile
+
+    pasta = tempfile.mkdtemp()
+    log = os.path.join(pasta, "chamadas.log")
+    xml = os.path.join(pasta, "tela.xml")
+    with open(xml, "w", encoding="utf-8") as fh:
+        fh.write(TELA_FALSA)
+
+    programas = {"adb": ADB_FALSO.replace("__LOG__", log).replace("__XML__", xml)}
+    for programa in ("termux-notification", "termux-clipboard-set",
+                     "termux-clipboard-get", "termux-sms-send",
+                     "termux-tts-speak", "termux-open-url"):
+        programas[programa] = (
+            TERMUX_FALSO.replace("__NOME__", programa).replace("__LOG__", log)
+        )
+
+    for nome, conteudo in programas.items():
+        destino = os.path.join(pasta, nome)
+        with open(destino, "w", encoding="utf-8") as fh:
+            fh.write(conteudo)
+        os.chmod(destino, os.stat(destino).st_mode | stat.S_IEXEC)
+    return pasta, log
+
+
+def testa_celular():
+    print("\nControle do celular (com um Android de mentira):")
+    pasta, log = android_falso()
+    path_original = os.environ["PATH"]
+    os.environ["PATH"] = pasta + os.pathsep + path_original
+    capturas_original = server.CAPTURAS
+    server.CAPTURAS = os.path.join(pasta, "capturas")
+
+    def chamadas():
+        try:
+            with open(log, encoding="utf-8") as fh:
+                return fh.read()
+        except FileNotFoundError:
+            return ""
+
+    def erro_de(funcao, *args, **kwargs):
+        try:
+            funcao(*args, **kwargs)
+            return ""
+        except Exception as exc:
+            return str(exc)
+
+    try:
+        leitura = server.tool_tela()
+        check("tela lista os itens com coordenada",
+              "Ana Paula" in leitura and "(540,380)" in leitura)
+        check("tela usa content-desc quando nao ha texto", "Nova conversa" in leitura)
+        check("tela marca o campo de texto", "campo de texto" in leitura)
+        check("tela filtra",
+              "Ana" in server.tool_tela("ana") and "Enviar" not in server.tool_tela("ana"))
+
+        server.tool_tocar("Enviar")
+        check("tocar por texto calcula o centro certo",
+              "input tap 990 2330" in chamadas())
+        server.tool_tocar(x=100, y=200)
+        check("tocar por coordenada", "input tap 100 200" in chamadas())
+        server.tool_tocar("Ana Paula", segurar=True)
+        check("toque longo vira swipe parado",
+              "input swipe 540 380 540 380 800" in chamadas())
+        check("texto ambiguo pede desambiguacao",
+              "casa com" in erro_de(server.tool_tocar, "a"))
+        check("texto inexistente manda olhar a tela",
+              "Chame 'tela'" in erro_de(server.tool_tocar, "Botao inexistente"))
+
+        server.tool_digitar("oi tudo bem")
+        check("digitar troca espaco por %s", "input text oi%studo%sbem" in chamadas())
+        server.tool_digitar("ate amanha", enviar=True)
+        check("digitar com enviar aperta Enter", "input keyevent 66" in chamadas())
+        resposta = server.tool_digitar("ate amanha, tá?")
+        check("texto com acento vai pela area de transferencia",
+              "termux-clipboard-set" in chamadas() and "input keyevent 279" in chamadas())
+        check("digitar avisa que usou outro caminho", "area de transferencia" in resposta)
+
+        server.tool_botao("voltar")
+        check("botao vira keyevent", "input keyevent 4" in chamadas())
+        check("botao desconhecido vira erro", erro_de(server.tool_botao, "turbo") != "")
+
+        server.tool_deslizar("baixo")
+        check("deslizar mede a tela e calcula o caminho",
+              "input swipe 540 2000 540 400 300" in chamadas())
+        check("direcao invalida vira erro", erro_de(server.tool_deslizar, "diagonal") != "")
+
+        server.tool_abrir("whatsapp")
+        check("abrir conhece apps por apelido", "monkey -p com.whatsapp" in chamadas())
+        server.tool_abrir("notas")
+        check("abrir procura no que esta instalado",
+              "monkey -p com.exemplo.notas" in chamadas())
+        server.tool_abrir("https://exemplo.com")
+        check("abrir link usa o termux", "termux-open-url https://exemplo.com" in chamadas())
+        check("app inexistente vira erro", erro_de(server.tool_abrir, "zzznaoexiste") != "")
+
+        server.tool_notificar("Lembrete", "hora do remedio")
+        check("notificar chama o termux", "termux-notification -t Lembrete" in chamadas())
+
+        server.tool_enviar_sms("+55 (81) 99999-1234", "oi")
+        check("sms limpa o numero", "termux-sms-send -n +5581999991234" in chamadas())
+        check("sms recusa numero curto demais",
+              erro_de(server.tool_enviar_sms, "123", "oi") != "")
+
+        resposta = server.tool_captura("teste.png")
+        arquivo = os.path.join(server.CAPTURAS, "teste.png")
+        check("captura salva um PNG de verdade",
+              os.path.exists(arquivo) and open(arquivo, "rb").read(4) == b"\x89PNG")
+        check("captura diz onde salvou", "teste.png" in resposta)
+
+        diagnostico = server.tool_celular()
+        check("diagnostico ve o adb conectado", "localhost:5555" in diagnostico)
+        check("diagnostico ve o termux-api", "termux-api: ok" in diagnostico)
+    finally:
+        os.environ["PATH"] = path_original
+        server.CAPTURAS = capturas_original
+        shutil.rmtree(pasta, ignore_errors=True)
+
+
+def testa_celular_ausente():
+    print("\nSem celular (o caso deste container):")
+    import tempfile
+    vazio = tempfile.mkdtemp()
+    path_original = os.environ["PATH"]
+    os.environ["PATH"] = vazio
+
+    def erro_de(funcao, *args):
+        try:
+            funcao(*args)
+            return ""
+        except Exception as exc:
+            return str(exc)
+
+    try:
+        check("tocar sem adb explica como parear",
+              "Depuracao sem fio" in erro_de(server.tool_tocar, "x"))
+        check("notificar sem termux explica o pacote",
+              "pkg install termux-api" in erro_de(server.tool_notificar, "oi"))
+        check("diagnostico avisa que nao e Android",
+              "NAO e um Android" in server.tool_celular())
+    finally:
+        os.environ["PATH"] = path_original
+        shutil.rmtree(vazio, ignore_errors=True)
+
+
 def testa_memoria():
     print("\nMemoria (lembrar/recordar/esquecer):")
     antes = server._load_memory()
@@ -399,6 +578,8 @@ def main():
     testa_datas()
     testa_agenda()
     testa_sincronizar()
+    testa_celular()
+    testa_celular_ausente()
     testa_memoria()
     testa_cli()
     if FALHAS:

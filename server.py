@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -323,6 +324,189 @@ def _linha_tarefa(tarefa, agora):
     return "[%d] %s — %s%s" % (
         tarefa["id"], _formatar(tarefa["quando"], agora), tarefa["o_que"], repete,
     )
+
+
+# ------------------------------------------------------------------ celular
+
+# Duas camadas, com permissoes bem diferentes:
+#
+#   termux-api  — notificar, falar, SMS, area de transferencia, abrir link.
+#                 Basta `pkg install termux-api` e o app Termux:API.
+#   adb         — tocar, digitar, deslizar, ler a tela. Precisa da Depuracao
+#                 sem fio pareada com o proprio aparelho (localhost).
+#
+# Nada disso funciona num container: o servidor tem que estar rodando no
+# telefone. A ferramenta 'celular' diz exatamente o que falta.
+
+CAPTURAS = os.path.join(DATA_DIR, "capturas")
+
+TECLAS = {
+    "home": 3, "inicio": 3, "voltar": 4, "back": 4, "recentes": 187,
+    "enter": 66, "ok": 66, "apagar": 67, "backspace": 67, "buscar": 84,
+    "tela": 26, "power": 26, "volume+": 24, "volume-": 25, "mudo": 164,
+    "play": 85, "proxima": 87, "anterior": 88, "camera": 27, "colar": 279,
+}
+
+APPS_CONHECIDOS = {
+    "whatsapp": "com.whatsapp", "zap": "com.whatsapp",
+    "instagram": "com.instagram.android", "insta": "com.instagram.android",
+    "telegram": "org.telegram.messenger", "youtube": "com.google.android.youtube",
+    "chrome": "com.android.chrome", "gmail": "com.google.android.gm",
+    "maps": "com.google.android.apps.maps", "mapas": "com.google.android.apps.maps",
+    "spotify": "com.spotify.music", "camera": "com.android.camera",
+    "calendario": "com.google.android.calendar", "agenda": "com.google.android.calendar",
+    "fotos": "com.google.android.apps.photos", "telefone": "com.android.dialer",
+    "mensagens": "com.google.android.apps.messaging", "sms": "com.google.android.apps.messaging",
+    "configuracoes": "com.android.settings", "ajustes": "com.android.settings",
+    "termux": "com.termux", "x": "com.twitter.android", "twitter": "com.twitter.android",
+    "tiktok": "com.zhiliaoapp.musically", "facebook": "com.facebook.katana",
+    "nubank": "com.nu.production", "itau": "com.itau", "bb": "br.com.bb.android",
+    "ifood": "br.com.brainweb.ifood", "uber": "com.ubercab", "mercadolivre": "com.mercadolibre",
+}
+
+AJUDA_TERMUX = (
+    "isto precisa do Termux com a API instalada:\n"
+    "  pkg install termux-api\n"
+    "e o app Termux:API (F-Droid), que e separado do Termux."
+)
+
+AJUDA_ADB = (
+    "isto precisa do adb falando com o proprio aparelho:\n"
+    "  1. pkg install android-tools\n"
+    "  2. Opcoes do desenvolvedor > Depuracao sem fio > Parear com codigo\n"
+    "  3. adb pair localhost:PORTA_DO_PAREAMENTO   (digite o codigo)\n"
+    "  4. adb connect localhost:PORTA_DA_DEPURACAO\n"
+    "O pareamento cai a cada reinicio do aparelho."
+)
+
+
+def _tem(programa):
+    return shutil.which(programa) is not None
+
+
+def _rodar(comando, timeout=30, entrada=None, binario=False):
+    """Executa uma lista de argumentos e devolve (codigo, saida)."""
+    try:
+        proc = subprocess.run(
+            comando, capture_output=True, text=not binario, timeout=timeout,
+            input=entrada,
+        )
+        if binario:
+            return proc.returncode, proc.stdout
+    except FileNotFoundError:
+        raise RuntimeError("programa nao encontrado: %s" % comando[0])
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("'%s' demorou demais (%ss)" % (comando[0], timeout))
+    return proc.returncode, (proc.stdout + proc.stderr).strip()
+
+
+def _termux(programa, *args, **kwargs):
+    if not _tem(programa):
+        raise RuntimeError("%s nao existe aqui — %s" % (programa, AJUDA_TERMUX))
+    codigo, saida = _rodar([programa] + list(args), **kwargs)
+    if codigo:
+        raise RuntimeError("%s falhou: %s" % (programa, saida or "sem mensagem"))
+    return saida
+
+
+def _aparelhos():
+    """Lista os seriais que o adb enxerga. Vazio se nenhum."""
+    if not _tem("adb"):
+        return []
+    codigo, saida = _rodar(["adb", "devices"], timeout=20)
+    if codigo:
+        return []
+    seriais = []
+    for linha in saida.splitlines()[1:]:
+        partes = linha.split()
+        if len(partes) >= 2 and partes[1] == "device":
+            seriais.append(partes[0])
+    return seriais
+
+
+def _adb(*args, **kwargs):
+    """Roda um comando adb, explicando o que falta quando nao da.
+
+    Com binario=True devolve bytes crus — e o caso da captura de tela.
+    """
+    if not _tem("adb"):
+        raise RuntimeError("adb nao encontrado — %s" % AJUDA_ADB)
+    seriais = _aparelhos()
+    if not seriais:
+        raise RuntimeError("nenhum aparelho conectado ao adb — %s" % AJUDA_ADB)
+    if len(seriais) > 1:
+        raise RuntimeError(
+            "o adb enxerga mais de um aparelho (%s); desconecte os outros"
+            % ", ".join(seriais)
+        )
+    codigo, saida = _rodar(["adb", "-s", seriais[0]] + list(args), **kwargs)
+    if codigo:
+        detalhe = saida if isinstance(saida, str) else saida.decode("utf-8", "replace")
+        raise RuntimeError("adb %s falhou: %s" % (args[0], detalhe or "sem mensagem"))
+    return saida
+
+
+def _shell(comando, **kwargs):
+    return _adb("shell", comando, **kwargs)
+
+
+def _escapar_shell(texto):
+    """input text engole caracteres do shell; espaco vira %s."""
+    seguro = texto
+    for char in "\\()<>|;&*~\"'`$":
+        seguro = seguro.replace(char, "\\" + char)
+    return seguro.replace(" ", "%s")
+
+
+def _centro(bounds):
+    """'[0,100][1080,300]' -> (540, 200)."""
+    numeros = re.findall(r"-?\d+", bounds or "")
+    if len(numeros) != 4:
+        return None
+    x1, y1, x2, y2 = (int(n) for n in numeros)
+    return (x1 + x2) // 2, (y1 + y2) // 2
+
+
+def _ler_tela():
+    """Devolve a lista de elementos visiveis, com texto e coordenada."""
+    _shell("uiautomator dump /sdcard/faztudo_tela.xml", timeout=60)
+    bruto = _adb("exec-out", "cat", "/sdcard/faztudo_tela.xml", timeout=60)
+    inicio = bruto.find("<?xml")
+    if inicio > 0:
+        bruto = bruto[inicio:]
+    try:
+        raiz = ET.fromstring(bruto)
+    except ET.ParseError as exc:
+        raise RuntimeError("nao consegui ler a tela: %s" % exc)
+
+    elementos = []
+    for no in raiz.iter("node"):
+        texto = (no.get("text") or "").strip()
+        descricao = (no.get("content-desc") or "").strip()
+        clicavel = no.get("clickable") == "true"
+        if not (texto or descricao) and not clicavel:
+            continue
+        centro = _centro(no.get("bounds"))
+        if centro is None:
+            continue
+        elementos.append({
+            "rotulo": texto or descricao,
+            "classe": (no.get("class") or "").rsplit(".", 1)[-1],
+            "clicavel": clicavel,
+            "editavel": no.get("class", "").endswith("EditText"),
+            "x": centro[0],
+            "y": centro[1],
+        })
+    return elementos
+
+
+def _procurar(elementos, alvo):
+    """Acha elementos cujo rotulo casa com o alvo, ignorando acento e caixa."""
+    procurado = _sem_acento(alvo).strip()
+    exatos = [e for e in elementos if _sem_acento(e["rotulo"]).strip() == procurado]
+    if exatos:
+        return exatos
+    return [e for e in elementos if procurado in _sem_acento(e["rotulo"])]
 
 
 # ------------------------------------------------------------- ferramentas
@@ -934,6 +1118,306 @@ def tool_esquecer(chave):
     del memory[chave]
     _save_memory(memory)
     return "Anotacao '%s' apagada." % chave
+
+
+@tool(
+    "celular",
+    "Diz o que da para fazer no aparelho agora: o que ja esta instalado, o "
+    "que falta e como resolver. Use ANTES de tentar mexer na tela, e sempre "
+    "que uma ferramenta do celular falhar.",
+)
+def tool_celular():
+    linhas = ["Onde estou: %s" % ("Android/Termux" if os.path.isdir("/system") else
+                                  "NAO e um Android — nenhuma ferramenta de celular vai funcionar aqui")]
+
+    api = [p for p in ("termux-notification", "termux-clipboard-get",
+                       "termux-sms-send", "termux-tts-speak", "termux-open-url")
+           if _tem(p)]
+    if api:
+        linhas.append("termux-api: ok (%d comandos)" % len(api))
+    else:
+        linhas.append("termux-api: ausente — %s" % AJUDA_TERMUX)
+
+    if not _tem("adb"):
+        linhas.append("adb: ausente — %s" % AJUDA_ADB)
+    else:
+        seriais = _aparelhos()
+        if seriais:
+            linhas.append("adb: conectado a %s" % ", ".join(seriais))
+        else:
+            linhas.append("adb: instalado, mas sem aparelho pareado — %s" % AJUDA_ADB)
+
+    linhas.append(
+        "\nCom termux-api: abrir, notificar, falar, area_transferencia, enviar_sms."
+        "\nCom adb: tela, tocar, digitar, deslizar, botao, captura."
+    )
+    return "\n".join(linhas)
+
+
+@tool(
+    "tela",
+    "Le o que esta na tela do celular agora e devolve os elementos com as "
+    "coordenadas. Use SEMPRE antes de tocar em algo, para saber o que existe "
+    "e onde esta.",
+    {"filtro": {"type": "string", "description": "Mostrar so o que contiver este texto"}},
+)
+def tool_tela(filtro=None):
+    elementos = _ler_tela()
+    if filtro:
+        elementos = _procurar(elementos, filtro)
+    if not elementos:
+        return "Nada visivel%s." % (" com '%s'" % filtro if filtro else "")
+
+    linhas = []
+    for elemento in elementos[:60]:
+        marcas = []
+        if elemento["editavel"]:
+            marcas.append("campo de texto")
+        elif elemento["clicavel"]:
+            marcas.append("tocavel")
+        linhas.append("- %s  (%d,%d)%s" % (
+            elemento["rotulo"] or "[%s]" % elemento["classe"],
+            elemento["x"], elemento["y"],
+            "  [%s]" % ", ".join(marcas) if marcas else "",
+        ))
+    extra = "\n(+%d elementos)" % (len(elementos) - 60) if len(elementos) > 60 else ""
+    return "\n".join(linhas) + extra
+
+
+@tool(
+    "tocar",
+    "Toca na tela. Prefira dizer o texto do que quer tocar ('Enviar') a "
+    "adivinhar coordenada — o servidor acha a posicao sozinho.",
+    {
+        "texto": {"type": "string", "description": "Texto do botao/item a tocar"},
+        "x": {"type": "number", "description": "Coordenada X (se souber)"},
+        "y": {"type": "number", "description": "Coordenada Y (se souber)"},
+        "segurar": {"type": "boolean", "description": "Toque longo (padrao: nao)"},
+    },
+)
+def tool_tocar(texto=None, x=None, y=None, segurar=False):
+    if x is not None and y is not None:
+        alvo, onde = (int(x), int(y)), "(%d,%d)" % (int(x), int(y))
+    elif texto:
+        achados = _procurar(_ler_tela(), texto)
+        if not achados:
+            raise ValueError(
+                "nao achei '%s' na tela. Chame 'tela' para ver o que existe." % texto
+            )
+        if len(achados) > 1:
+            opcoes = "\n".join(
+                "- %s (%d,%d)" % (e["rotulo"], e["x"], e["y"]) for e in achados[:8]
+            )
+            raise ValueError(
+                "'%s' casa com %d elementos; diga a coordenada:\n%s"
+                % (texto, len(achados), opcoes)
+            )
+        alvo = (achados[0]["x"], achados[0]["y"])
+        onde = "'%s' (%d,%d)" % (achados[0]["rotulo"], alvo[0], alvo[1])
+    else:
+        raise ValueError("preciso do 'texto' do elemento ou de 'x' e 'y'")
+
+    if segurar:
+        _shell("input swipe %d %d %d %d 800" % (alvo[0], alvo[1], alvo[0], alvo[1]))
+        return "Toque longo em %s." % onde
+    _shell("input tap %d %d" % alvo)
+    return "Toquei em %s." % onde
+
+
+@tool(
+    "digitar",
+    "Digita um texto no campo que estiver em foco. Toque no campo antes. "
+    "Com 'enviar', aperta Enter no fim.",
+    {
+        "texto": {"type": "string", "description": "O que digitar"},
+        "enviar": {"type": "boolean", "description": "Apertar Enter depois (padrao: nao)"},
+    },
+    ["texto"],
+)
+def tool_digitar(texto, enviar=False):
+    try:
+        texto.encode("ascii")
+        _shell("input text %s" % _escapar_shell(texto))
+        via = ""
+    except UnicodeEncodeError:
+        # 'input text' nao da conta de acento; colar da area de transferencia da.
+        _termux("termux-clipboard-set", texto)
+        _shell("input keyevent %d" % TECLAS["colar"])
+        via = " (via area de transferencia, por causa dos acentos)"
+    if enviar:
+        _shell("input keyevent %d" % TECLAS["enter"])
+    return "Digitei %r%s%s." % (texto, via, " e enviei" if enviar else "")
+
+
+@tool(
+    "botao",
+    "Aperta um botao do aparelho: home, voltar, recentes, enter, apagar, "
+    "buscar, tela (liga/desliga), volume+, volume-, play.",
+    {"qual": {"type": "string", "description": "Nome do botao"}},
+    ["qual"],
+)
+def tool_botao(qual):
+    chave = _sem_acento(qual).strip()
+    if chave not in TECLAS:
+        raise ValueError("nao conheco o botao '%s'. Aceito: %s"
+                         % (qual, ", ".join(sorted(TECLAS))))
+    _shell("input keyevent %d" % TECLAS[chave])
+    return "Apertei '%s'." % chave
+
+
+@tool(
+    "deslizar",
+    "Desliza o dedo na tela: para cima, para baixo, esquerda, direita. Use "
+    "para rolar uma lista ou passar de tela.",
+    {
+        "direcao": {
+            "type": "string",
+            "description": "cima, baixo, esquerda ou direita",
+        },
+        "duracao": {"type": "number", "description": "Milissegundos (padrao 300)"},
+    },
+    ["direcao"],
+)
+def tool_deslizar(direcao, duracao=300):
+    tamanho = _shell("wm size")
+    medida = re.search(r"(\d+)x(\d+)", tamanho)
+    if not medida:
+        raise RuntimeError("nao consegui medir a tela: %s" % tamanho)
+    largura, altura = int(medida.group(1)), int(medida.group(2))
+    meio_x, meio_y = largura // 2, altura // 2
+    passo_y, passo_x = altura // 3, largura // 3
+
+    caminhos = {
+        # Rolar para baixo = arrastar o conteudo para cima.
+        "baixo": (meio_x, meio_y + passo_y, meio_x, meio_y - passo_y),
+        "cima": (meio_x, meio_y - passo_y, meio_x, meio_y + passo_y),
+        "esquerda": (meio_x + passo_x, meio_y, meio_x - passo_x, meio_y),
+        "direita": (meio_x - passo_x, meio_y, meio_x + passo_x, meio_y),
+    }
+    chave = _sem_acento(direcao).strip()
+    if chave not in caminhos:
+        raise ValueError("direcao aceita: %s" % ", ".join(caminhos))
+    _shell("input swipe %d %d %d %d %d" % (caminhos[chave] + (int(duracao),)))
+    return "Deslizei para %s." % chave
+
+
+@tool(
+    "captura",
+    "Tira uma foto da tela e salva num arquivo, para voce poder olhar.",
+    {"nome": {"type": "string", "description": "Nome do arquivo (opcional)"}},
+)
+def tool_captura(nome=None):
+    os.makedirs(CAPTURAS, exist_ok=True)
+    arquivo = os.path.join(
+        CAPTURAS, nome or ("tela-%s.png" % _agora().strftime("%Y%m%d-%H%M%S"))
+    )
+    if not _tem("adb"):
+        raise RuntimeError("adb nao encontrado — %s" % AJUDA_ADB)
+    imagem = _adb("exec-out", "screencap", "-p", timeout=60, binario=True)
+    if not imagem.startswith(b"\x89PNG"):
+        raise RuntimeError("o adb nao devolveu um PNG (%d bytes)" % len(imagem))
+    with open(arquivo, "wb") as fh:
+        fh.write(imagem)
+    return "Tela salva em %s (%d KB)" % (arquivo, len(imagem) // 1024)
+
+
+@tool(
+    "abrir",
+    "Abre um aplicativo pelo nome ou um link no celular. Ex: 'whatsapp', "
+    "'instagram', 'https://...'.",
+    {"o_que": {"type": "string", "description": "Nome do app ou URL completa"}},
+    ["o_que"],
+)
+def tool_abrir(o_que):
+    alvo = o_que.strip()
+
+    if "://" in alvo or alvo.startswith("www."):
+        url = alvo if "://" in alvo else "https://" + alvo
+        if _tem("termux-open-url"):
+            _termux("termux-open-url", url)
+            return "Abri %s" % url
+        _shell("am start -a android.intent.action.VIEW -d %s" % _escapar_shell(url))
+        return "Abri %s" % url
+
+    chave = _sem_acento(alvo).replace(" ", "")
+    pacote = APPS_CONHECIDOS.get(chave)
+    if pacote is None and "." in alvo:
+        pacote = alvo  # ja veio como nome de pacote
+    if pacote is None:
+        instalados = _shell("pm list packages")
+        candidatos = [
+            linha.split(":", 1)[-1].strip()
+            for linha in instalados.splitlines()
+            if chave in _sem_acento(linha)
+        ]
+        if not candidatos:
+            raise ValueError(
+                "nao achei app com '%s'. Diga o nome do pacote "
+                "(ex: com.whatsapp) ou veja com: run pm list packages" % o_que
+            )
+        pacote = sorted(candidatos, key=len)[0]
+
+    _shell("monkey -p %s -c android.intent.category.LAUNCHER 1" % pacote)
+    return "Abri %s" % pacote
+
+
+@tool(
+    "notificar",
+    "Mostra uma notificacao no celular. Use para avisar de algo sem "
+    "interromper o que a pessoa esta fazendo.",
+    {
+        "titulo": {"type": "string", "description": "Titulo da notificacao"},
+        "texto": {"type": "string", "description": "Corpo (opcional)"},
+    },
+    ["titulo"],
+)
+def tool_notificar(titulo, texto=None):
+    args = ["-t", titulo]
+    if texto:
+        args += ["-c", texto]
+    _termux("termux-notification", *args)
+    return "Notificacao enviada: %s" % titulo
+
+
+@tool(
+    "falar",
+    "Fala um texto em voz alta no celular.",
+    {"texto": {"type": "string", "description": "O que falar"}},
+    ["texto"],
+)
+def tool_falar(texto):
+    _termux("termux-tts-speak", texto, timeout=120)
+    return "Falei: %s" % texto
+
+
+@tool(
+    "area_transferencia",
+    "Le ou escreve a area de transferencia do celular. Sem argumento, le.",
+    {"texto": {"type": "string", "description": "Texto a copiar (omita para ler)"}},
+)
+def tool_area_transferencia(texto=None):
+    if texto is None:
+        return _termux("termux-clipboard-get") or "(area de transferencia vazia)"
+    _termux("termux-clipboard-set", texto)
+    return "Copiado."
+
+
+@tool(
+    "enviar_sms",
+    "Envia um SMS de verdade pelo chip do celular. Confirme o numero antes: "
+    "isto sai na hora e nao tem como desfazer.",
+    {
+        "numero": {"type": "string", "description": "Numero de destino"},
+        "texto": {"type": "string", "description": "Mensagem"},
+    },
+    ["numero", "texto"],
+)
+def tool_enviar_sms(numero, texto):
+    limpo = re.sub(r"[^\d+]", "", numero)
+    if len(re.sub(r"\D", "", limpo)) < 8:
+        raise ValueError("numero curto demais para ser real: %s" % numero)
+    _termux("termux-sms-send", "-n", limpo, texto, timeout=60)
+    return "SMS enviado para %s." % limpo
 
 
 # ---------------------------------------------------------------- protocolo
