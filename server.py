@@ -10,9 +10,11 @@ decorador @tool(...) sobre uma funcao.
 """
 
 import ast
+import calendar
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -21,7 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 try:  # zoneinfo e 3.9+; sem ele a ferramenta 'hora' fica so no UTC/local
     from zoneinfo import ZoneInfo, available_timezones
@@ -82,6 +84,245 @@ def _save_memory(memory):
         json.dump(memory, fh, ensure_ascii=False, indent=2, sort_keys=True)
         fh.write("\n")  # arquivo versionado: diff limpo no git
     os.replace(tmp, MEMORY_FILE)
+
+
+# ------------------------------------------------------------------- agenda
+
+TAREFAS_FILE = os.path.join(DATA_DIR, "tarefas.json")
+
+# O container roda em UTC; quem pede "amanha as 9" nao esta em UTC.
+FUSO_PADRAO = os.environ.get("FAZTUDO_TZ", "America/Sao_Paulo")
+
+DIAS_SEMANA = {
+    "segunda": 0, "segunda-feira": 0, "terca": 1, "terca-feira": 1,
+    "quarta": 2, "quarta-feira": 2, "quinta": 3, "quinta-feira": 3,
+    "sexta": 4, "sexta-feira": 4, "sabado": 5, "domingo": 6,
+}
+NOMES_DIAS = ["segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo"]
+REPETICOES = ("diario", "semanal", "mensal", "uteis")
+
+
+def _fuso_local():
+    if ZoneInfo is None:
+        return timezone.utc
+    try:
+        return ZoneInfo(FUSO_PADRAO)
+    except Exception:
+        return timezone.utc
+
+
+def _agora():
+    return datetime.now(_fuso_local()).replace(microsecond=0)
+
+
+def _sem_acento(texto):
+    return "".join(
+        c for c in unicodedata.normalize("NFD", texto)
+        if unicodedata.category(c) != "Mn"
+    ).lower()
+
+
+def _extrair_repeticao(texto):
+    """Tira o 'todo dia' da frente e devolve (resto, repeticao ou None)."""
+    t = texto.strip()
+    regras = [
+        (r"^(?:todos?\s+os\s+)?dias?\s+uteis\b", "uteis"),
+        (r"^(?:todo|toda)s?(?:\s+os?)?\s+dias?\b", "diario"),
+        (r"^(?:todo|toda)s?(?:\s+as?)?\s+semanas?\b", "semanal"),
+        (r"^(?:todo|toda)s?(?:\s+os?)?\s+(?:mes|meses)\b", "mensal"),
+        (r"^(?:todo|toda)s?\s+(?=%s)" % "|".join(DIAS_SEMANA), "semanal"),
+    ]
+    for padrao, repeticao in regras:
+        novo, trocas = re.subn(padrao, "", t, count=1)
+        if trocas:
+            return novo.strip(), repeticao
+    return t, None
+
+
+def _extrair_hora(texto):
+    """Acha 'as 9', '9h', '9:30', '14h30' e devolve (resto, hora, minuto)."""
+    padroes = [
+        r"\b(?:as|a partir das?)?\s*(\d{1,2})\s*[h:]\s*(\d{2})\b",  # 14h30, 9:05
+        r"\b(?:as|a partir das?)?\s*(\d{1,2})\s*h\b",               # 9h
+        r"\bas\s+(\d{1,2})\b",                                      # as 9
+    ]
+    for padrao in padroes:
+        achado = re.search(padrao, texto)
+        if achado:
+            hora = int(achado.group(1))
+            minuto = int(achado.group(2)) if achado.lastindex == 2 else 0
+            if hora > 23 or minuto > 59:
+                raise ValueError("hora invalida: %sh%02d" % (hora, minuto))
+            resto = (texto[:achado.start()] + " " + texto[achado.end():]).strip()
+            return resto, hora, minuto
+    return texto, None, None
+
+
+def _interpretar_quando(quando, agora=None):
+    """Le 'amanha as 9', 'sexta 14h', 'em 2 horas', '2026-09-10 08:00'."""
+    agora = agora or _agora()
+    texto = _sem_acento(str(quando)).strip()
+    if not texto:
+        raise ValueError("preciso saber quando: ex. 'amanha as 9', 'em 2 horas'")
+
+    # 1. Data ja escrita por extenso (ISO). O caminho mais barato.
+    try:
+        exato = datetime.fromisoformat(texto.replace("/", "-"))
+        if exato.tzinfo is None:
+            exato = exato.replace(tzinfo=agora.tzinfo)
+        if ":" not in texto:  # data seca: 00:00 seria um lembrete inutil
+            exato = exato.replace(hour=9)
+        return exato.replace(microsecond=0)
+    except ValueError:
+        pass
+
+    # 2. Deslocamento relativo: "em 2 horas", "daqui a 30 minutos".
+    relativo = re.match(
+        r"^(?:em|daqui a)\s+(\d+)\s*(minuto|min|hora|h|dia|semana|mes|mes)e?s?\b", texto
+    )
+    if relativo:
+        n = int(relativo.group(1))
+        unidade = relativo.group(2)
+        if unidade in ("minuto", "min"):
+            return agora + timedelta(minutes=n)
+        if unidade in ("hora", "h"):
+            return agora + timedelta(hours=n)
+        if unidade == "dia":
+            return agora + timedelta(days=n)
+        if unidade == "semana":
+            return agora + timedelta(weeks=n)
+        return _somar_meses(agora, n)
+
+    # 3. Dia + hora em portugues.
+    resto, hora, minuto = _extrair_hora(texto)
+    tinha_hora = hora is not None
+    hora = 9 if hora is None else hora
+    minuto = minuto or 0
+    resto = re.sub(r"\b(?:as|de|do|da|no|na|dia|proxima|proximo|que vem)\b", " ", resto)
+    resto = re.sub(r"\s+", " ", resto).strip(" ,.")
+
+    base = agora.replace(hour=hora, minute=minuto, second=0, microsecond=0)
+
+    if resto in ("", "hoje"):
+        if resto == "" and not tinha_hora:
+            raise ValueError(
+                "nao entendi '%s'. Tente 'amanha as 9', 'sexta 14h', "
+                "'em 2 horas' ou uma data 2026-09-10 08:00." % quando
+            )
+        # Hora ja passada e sem dia dito: fica para amanha.
+        return base if base > agora or resto == "hoje" else base + timedelta(days=1)
+
+    if resto == "amanha":
+        return base + timedelta(days=1)
+    if resto in ("depois de amanha", "depois amanha"):
+        return base + timedelta(days=2)
+
+    if resto in DIAS_SEMANA:
+        alvo = DIAS_SEMANA[resto]
+        adiante = (alvo - agora.weekday()) % 7
+        candidato = base + timedelta(days=adiante)
+        return candidato if candidato > agora else candidato + timedelta(days=7)
+
+    dia_mes = re.match(r"^(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?$", resto)
+    if dia_mes:
+        dia, mes = int(dia_mes.group(1)), int(dia_mes.group(2))
+        ano = int(dia_mes.group(3) or agora.year)
+        ano += 2000 if ano < 100 else 0
+        try:
+            candidato = base.replace(year=ano, month=mes, day=dia)
+        except ValueError:
+            raise ValueError("data inexistente: %02d/%02d" % (dia, mes))
+        if candidato < agora and not dia_mes.group(3):
+            candidato = candidato.replace(year=ano + 1)
+        return candidato
+
+    # Dia do mes solto: "todo mes dia 10" vira "10" depois da limpeza.
+    so_dia = re.match(r"^(\d{1,2})$", resto)
+    if so_dia:
+        dia = int(so_dia.group(1))
+        if not 1 <= dia <= 31:
+            raise ValueError("dia do mes invalido: %d" % dia)
+        primeiro = base.replace(day=1)
+        for salto in range(0, 14):
+            mes = _somar_meses(primeiro, salto)
+            if dia <= calendar.monthrange(mes.year, mes.month)[1]:
+                candidato = mes.replace(day=dia)
+                if candidato > agora:
+                    return candidato
+        raise ValueError("nao achei um mes com dia %d" % dia)
+
+    raise ValueError(
+        "nao entendi 'quando': %s. Tente 'amanha as 9', 'sexta 14h', "
+        "'em 2 horas', 'todo dia 8h' ou '2026-09-10 08:00'." % quando
+    )
+
+
+def _somar_meses(quando, n):
+    mes = quando.month - 1 + n
+    ano = quando.year + mes // 12
+    mes = mes % 12 + 1
+    dia = min(quando.day, calendar.monthrange(ano, mes)[1])
+    return quando.replace(year=ano, month=mes, day=dia)
+
+
+def _proxima_ocorrencia(quando, repeticao):
+    if repeticao == "diario":
+        return quando + timedelta(days=1)
+    if repeticao == "semanal":
+        return quando + timedelta(weeks=1)
+    if repeticao == "mensal":
+        return _somar_meses(quando, 1)
+    if repeticao == "uteis":
+        proximo = quando + timedelta(days=1)
+        while proximo.weekday() >= 5:
+            proximo += timedelta(days=1)
+        return proximo
+    raise ValueError("repeticao desconhecida: %s" % repeticao)
+
+
+def _load_tarefas():
+    try:
+        with open(TAREFAS_FILE, "r", encoding="utf-8") as fh:
+            dados = json.load(fh)
+    except (FileNotFoundError, ValueError):
+        return {"proximo_id": 1, "tarefas": []}
+    dados.setdefault("proximo_id", 1)
+    dados.setdefault("tarefas", [])
+    return dados
+
+
+def _save_tarefas(dados):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = TAREFAS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(dados, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, TAREFAS_FILE)
+
+
+def _formatar(quando, agora):
+    """'amanha (ter) 09:00' — data legivel, com a distancia ate ela."""
+    momento = datetime.fromisoformat(quando).astimezone(agora.tzinfo)
+    dias = (momento.date() - agora.date()).days
+    if dias == 0:
+        quando_txt = "hoje"
+    elif dias == 1:
+        quando_txt = "amanha"
+    elif dias == -1:
+        quando_txt = "ontem"
+    elif 0 < dias < 7:
+        quando_txt = NOMES_DIAS[momento.weekday()]
+    else:
+        quando_txt = momento.strftime("%d/%m")
+    atraso = " ATRASADA" if momento < agora else ""
+    return "%s %s%s" % (quando_txt, momento.strftime("%H:%M"), atraso)
+
+
+def _linha_tarefa(tarefa, agora):
+    repete = "  (%s)" % tarefa["repetir"] if tarefa.get("repetir") else ""
+    return "[%d] %s — %s%s" % (
+        tarefa["id"], _formatar(tarefa["quando"], agora), tarefa["o_que"], repete,
+    )
 
 
 # ------------------------------------------------------------- ferramentas
@@ -311,11 +552,7 @@ FUSOS_PT = {
 
 def _simplificar(texto):
     """'Tóquio' -> 'toquio': sem acento, minusculo, espaco vira _."""
-    sem_acento = "".join(
-        c for c in unicodedata.normalize("NFD", texto)
-        if unicodedata.category(c) != "Mn"
-    )
-    return sem_acento.strip().replace(" ", "_").replace("-", "_").lower()
+    return _sem_acento(texto).strip().replace(" ", "_").replace("-", "_")
 
 
 def _achar_fuso(lugar):
@@ -429,6 +666,223 @@ def tool_noticias(tema=None, quantidade=8):
         return "Nenhuma manchete encontrada%s." % (" para '%s'" % tema if tema else "")
     cabecalho = "Manchetes sobre '%s':" % tema if tema else "Manchetes do momento:"
     return cabecalho + "\n" + "\n".join(manchetes)
+
+
+@tool(
+    "agendar",
+    "Marca um lembrete ou tarefa para uma data/hora. Use sempre que "
+    "pedirem para lembrar de algo, marcar, agendar ou avisar depois.",
+    {
+        "o_que": {"type": "string", "description": "O que lembrar"},
+        "quando": {
+            "type": "string",
+            "description": "'amanha as 9', 'sexta 14h', 'em 2 horas', "
+            "'todo dia 8h', 'dias uteis 7h30' ou '2026-09-10 08:00'",
+        },
+        "repetir": {
+            "type": "string",
+            "description": "diario, semanal, mensal ou uteis (opcional; "
+            "tambem sai de um 'todo dia' escrito em 'quando')",
+        },
+    },
+    ["o_que", "quando"],
+)
+def tool_agendar(o_que, quando, repetir=None):
+    agora = _agora()
+    texto, repeticao_dita = _extrair_repeticao(_sem_acento(str(quando)))
+    repeticao = (repetir or repeticao_dita or "").strip().lower() or None
+    if repeticao and repeticao not in REPETICOES:
+        raise ValueError("repetir aceita: %s" % ", ".join(REPETICOES))
+
+    momento = _interpretar_quando(texto or str(quando), agora)
+    dados = _load_tarefas()
+    tarefa = {
+        "id": dados["proximo_id"],
+        "o_que": o_que.strip(),
+        "quando": momento.isoformat(),
+        "repetir": repeticao,
+        "criado_em": agora.isoformat(),
+    }
+    dados["tarefas"].append(tarefa)
+    dados["proximo_id"] += 1
+    _save_tarefas(dados)
+    return "Agendado: %s\nUse 'sincronizar' para isto sobreviver ao fim da sessao." % (
+        _linha_tarefa(tarefa, agora)
+    )
+
+
+@tool(
+    "pendencias",
+    "Lista o que esta marcado: o que ja venceu e o que vem a seguir. Use ao "
+    "abrir a conversa, quando perguntarem o que tem para hoje, ou o que "
+    "ficou pendente.",
+    {
+        "periodo": {
+            "type": "string",
+            "description": "'hoje', 'semana' (padrao), 'mes' ou 'tudo'",
+        }
+    },
+)
+def tool_pendencias(periodo="semana"):
+    agora = _agora()
+    dados = _load_tarefas()
+    if not dados["tarefas"]:
+        return "Nada agendado."
+
+    limites = {"hoje": 1, "semana": 7, "mes": 31, "tudo": None}
+    if periodo not in limites:
+        raise ValueError("periodo aceita: %s" % ", ".join(limites))
+    limite = limites[periodo]
+
+    tarefas = sorted(dados["tarefas"], key=lambda t: t["quando"])
+    vencidas, futuras = [], []
+    for tarefa in tarefas:
+        momento = datetime.fromisoformat(tarefa["quando"]).astimezone(agora.tzinfo)
+        if momento < agora:
+            vencidas.append(tarefa)
+        elif limite is None or (momento.date() - agora.date()).days < limite:
+            futuras.append(tarefa)
+
+    partes = []
+    if vencidas:
+        partes.append("Venceram:\n" + "\n".join(_linha_tarefa(t, agora) for t in vencidas))
+    if futuras:
+        partes.append("A seguir:\n" + "\n".join(_linha_tarefa(t, agora) for t in futuras))
+    if not partes:
+        return "Nada vencido, e nada marcado para %s." % periodo
+    return "\n\n".join(partes)
+
+
+@tool(
+    "concluir",
+    "Marca uma tarefa como feita. Se ela se repete, ja reagenda a proxima "
+    "ocorrencia em vez de sumir.",
+    {"id": {"type": "number", "description": "Numero da tarefa (vem de 'pendencias')"}},
+    ["id"],
+)
+def tool_concluir(id):
+    agora = _agora()
+    dados = _load_tarefas()
+    for indice, tarefa in enumerate(dados["tarefas"]):
+        if tarefa["id"] == int(id):
+            if tarefa.get("repetir"):
+                momento = datetime.fromisoformat(tarefa["quando"])
+                proxima = _proxima_ocorrencia(momento, tarefa["repetir"])
+                # Se ficou muito para tras, avanca ate o futuro.
+                while proxima < agora:
+                    proxima = _proxima_ocorrencia(proxima, tarefa["repetir"])
+                tarefa["quando"] = proxima.isoformat()
+                _save_tarefas(dados)
+                return "Feito. Proxima: %s" % _linha_tarefa(tarefa, agora)
+            del dados["tarefas"][indice]
+            _save_tarefas(dados)
+            return "Feito: %s" % tarefa["o_que"]
+    raise ValueError("nao existe tarefa com id %s" % id)
+
+
+@tool(
+    "cancelar",
+    "Apaga uma tarefa agendada, inclusive as que se repetem.",
+    {"id": {"type": "number", "description": "Numero da tarefa"}},
+    ["id"],
+)
+def tool_cancelar(id):
+    dados = _load_tarefas()
+    for indice, tarefa in enumerate(dados["tarefas"]):
+        if tarefa["id"] == int(id):
+            del dados["tarefas"][indice]
+            _save_tarefas(dados)
+            return "Cancelado: %s" % tarefa["o_que"]
+    raise ValueError("nao existe tarefa com id %s" % id)
+
+
+def _git(*args):
+    proc = subprocess.run(
+        ["git", "-C", ROOT] + list(args), capture_output=True, text=True, timeout=120
+    )
+    return proc.returncode, (proc.stdout + proc.stderr).strip()
+
+
+@tool(
+    "sincronizar",
+    "Salva no git o que foi anotado e agendado, para sobreviver ao fim da "
+    "sessao. Use depois de agendar ou lembrar de algo importante, e sempre "
+    "que a conversa estiver acabando.",
+    {
+        "mensagem": {"type": "string", "description": "Mensagem do commit (opcional)"},
+        "enviar": {
+            "type": "boolean",
+            "description": "Empurrar para o remoto tambem (padrao: sim)",
+        },
+    },
+)
+def tool_sincronizar(mensagem=None, enviar=True):
+    if not os.path.isdir(os.path.join(ROOT, ".git")):
+        raise RuntimeError("%s nao e um repositorio git" % ROOT)
+
+    codigo, saida = _git("add", "--", "data")
+    if codigo:
+        raise RuntimeError("git add falhou: %s" % saida)
+
+    if _git("diff", "--cached", "--quiet", "--", "data")[0] == 0:
+        return "Nada mudou desde a ultima sincronizacao."
+
+    codigo, saida = _git(
+        "-c", "user.name=faztudo", "-c", "user.email=faztudo@local",
+        "commit", "-m", mensagem or "Atualiza memoria e agenda", "--", "data",
+    )
+    if codigo:
+        raise RuntimeError("git commit falhou: %s" % saida)
+    resumo = _git("log", "-1", "--pretty=%h %s")[1]
+
+    if not enviar:
+        return "Commitado (%s). Sem enviar, a pedido." % resumo
+
+    codigo, saida = _git("push")
+    if codigo:
+        codigo, saida = _git("push", "-u", "origin", "HEAD")
+    if codigo:
+        return (
+            "Commitado (%s), mas o push falhou:\n%s\n"
+            "O commit esta salvo aqui; basta enviar quando der." % (resumo, saida[:400])
+        )
+    return "Sincronizado: %s" % resumo
+
+
+@tool(
+    "briefing",
+    "O resumo de abertura do dia: hora, o que esta pendente, clima, cambio e "
+    "manchetes, tudo de uma vez. Use quando pedirem 'bom dia', 'me atualiza' "
+    "ou 'como estao as coisas'.",
+    {
+        "cidade": {"type": "string", "description": "Cidade para o clima (opcional)"},
+        "moeda": {"type": "string", "description": "Moeda para a cotacao (padrao USD)"},
+    },
+)
+def tool_briefing(cidade=None, moeda="USD"):
+    blocos = []
+
+    def tentar(titulo, funcao):
+        try:
+            blocos.append("== %s ==\n%s" % (titulo, funcao()))
+        except Exception as exc:
+            blocos.append("== %s ==\n(indisponivel: %s)" % (titulo, exc))
+
+    def agora_local():
+        if cidade:  # a cidade do clima pode nao ser um fuso conhecido
+            try:
+                return tool_hora(cidade)
+            except Exception:
+                pass
+        return tool_hora()
+
+    tentar("Agora", agora_local)
+    tentar("Pendencias", lambda: tool_pendencias("hoje"))
+    if cidade:
+        tentar("Clima", lambda: tool_clima(cidade))
+    tentar("Cambio", lambda: tool_cotacao(moeda))
+    tentar("Manchetes", lambda: tool_noticias(quantidade=5))
+    return "\n\n".join(blocos)
 
 
 @tool(
@@ -653,13 +1107,25 @@ def cli(argv):
         if len(argv) < 2:
             print(USO, end="")
             return 2
+        tipos = TOOLS.get(argv[1], {}).get("inputSchema", {}).get("properties", {})
         args = {}
         for par in argv[2:]:
             chave, igual, valor = par.partition("=")
             if not igual:
                 print("argumento precisa ser chave=valor: %s" % par)
                 return 2
-            args[chave] = valor
+            # No shell tudo chega como texto; o schema diz o que era para ser.
+            tipo = tipos.get(chave, {}).get("type")
+            if tipo == "boolean":
+                args[chave] = valor.strip().lower() in ("1", "true", "sim", "s", "yes")
+            elif tipo == "number":
+                try:
+                    args[chave] = float(valor) if "." in valor else int(valor)
+                except ValueError:
+                    print("'%s' precisa ser um numero: %s" % (chave, valor))
+                    return 2
+            else:
+                args[chave] = valor
         try:
             print(_chamar(argv[1], args))
         except Exception as exc:

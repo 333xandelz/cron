@@ -7,6 +7,7 @@ com um duble no lugar do `http`.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -80,7 +81,7 @@ def testa_protocolo():
     check("initialize ecoa a versao do cliente",
           r[1]["result"]["protocolVersion"] == "2025-06-18")
     check("ping responde vazio", r[5]["result"] == {})
-    check("tools/list lista ferramentas", len(r[2]["result"]["tools"]) >= 6)
+    check("tools/list lista ferramentas", len(r[2]["result"]["tools"]) >= 16)
     check("toda ferramenta tem inputSchema",
           all("inputSchema" in t for t in r[2]["result"]["tools"]))
     check("tools/list nao vaza a funcao python",
@@ -219,6 +220,143 @@ def testa_rede_falsa():
           "politica de rede" in proxy and "awesomeapi" in proxy)
 
 
+def testa_datas():
+    print("\nInterpretacao de datas (segunda, 07/09/2026 14:30):")
+    from datetime import datetime
+    agora = datetime(2026, 9, 7, 14, 30, tzinfo=server._fuso_local())
+
+    def quando(texto):
+        return server._interpretar_quando(texto, agora).strftime("%d/%m/%Y %H:%M")
+
+    casos = [
+        ("amanha as 9", "08/09/2026 09:00"),
+        ("amanhã às 9", "08/09/2026 09:00"),
+        ("hoje as 18h", "07/09/2026 18:00"),
+        ("em 2 horas", "07/09/2026 16:30"),
+        ("daqui a 30 minutos", "07/09/2026 15:00"),
+        ("em 3 dias", "10/09/2026 14:30"),
+        ("sexta 14h", "11/09/2026 14:00"),
+        ("depois de amanha as 7", "09/09/2026 07:00"),
+        ("quinta-feira 9:05", "10/09/2026 09:05"),
+        ("10/09", "10/09/2026 09:00"),
+        ("2026-12-25 18:30", "25/12/2026 18:30"),
+    ]
+    for texto, esperado in casos:
+        check("'%s' -> %s" % (texto, esperado), quando(texto) == esperado)
+
+    check("hora ja passada sem dia dito vai para amanha",
+          quando("9h") == "08/09/2026 09:00")
+    check("hora ainda por vir fica hoje", quando("18h") == "07/09/2026 18:00")
+    check("data seca ganha hora util, nao meia-noite",
+          quando("2026-12-25") == "25/12/2026 09:00")
+    check("mes com dia inexistente pula para o proximo",
+          quando("31") == "31/10/2026 09:00")
+
+    print("  -- repeticao --")
+    def repeticao(texto):
+        return server._extrair_repeticao(server._sem_acento(texto))[1]
+
+    check("'todo dia 8h' e diario", repeticao("todo dia 8h") == "diario")
+    check("'todos os dias' e diario", repeticao("todos os dias as 7") == "diario")
+    check("'toda semana' e semanal", repeticao("toda semana sexta 18h") == "semanal")
+    check("'todo mes' e mensal", repeticao("todo mes dia 10") == "mensal")
+    check("'dias uteis' e uteis", repeticao("dias uteis 7h30") == "uteis")
+    check("'toda segunda' e semanal", repeticao("toda segunda 9h") == "semanal")
+    check("'amanha 9h' nao repete", repeticao("amanha 9h") is None)
+
+    print("  -- recusas --")
+    def recusa(texto):
+        try:
+            server._interpretar_quando(texto, agora)
+            return False
+        except ValueError:
+            return True
+
+    check("texto vazio", recusa(""))
+    check("frase sem data", recusa("qualquer coisa"))
+    check("hora impossivel", recusa("25h"))
+    check("data inexistente", recusa("32/13"))
+
+
+def testa_agenda():
+    print("\nAgenda (num arquivo temporario):")
+    import tempfile
+    pasta = tempfile.mkdtemp()
+    arquivo = os.path.join(pasta, "tarefas.json")
+    original_arquivo, original_data = server.TAREFAS_FILE, server.DATA_DIR
+    server.TAREFAS_FILE, server.DATA_DIR = arquivo, pasta
+    try:
+        server.tool_agendar("ligar para a clinica", "amanha as 9")
+        server.tool_agendar("tomar remedio", "todo dia 8h")
+        server.tool_agendar("reuniao passada", "hoje as 00:01")
+
+        listagem = server.tool_pendencias()
+        check("lista o que foi agendado", "ligar para a clinica" in listagem)
+        check("separa o que ja venceu", "ATRASADA" in listagem)
+        check("mostra a repeticao", "(diario)" in listagem)
+
+        dados = json.load(open(arquivo, encoding="utf-8"))
+        repetida = [t for t in dados["tarefas"] if t["repetir"] == "diario"][0]
+        antes = repetida["quando"]
+        resposta = server.tool_concluir(repetida["id"])
+        depois = json.load(open(arquivo, encoding="utf-8"))
+        ainda_existe = [t for t in depois["tarefas"] if t["id"] == repetida["id"]]
+        check("concluir tarefa que repete reagenda em vez de apagar",
+              len(ainda_existe) == 1 and ainda_existe[0]["quando"] > antes)
+        check("concluir avisa qual e a proxima", "Proxima" in resposta)
+
+        simples = [t for t in depois["tarefas"] if not t["repetir"]][0]
+        server.tool_concluir(simples["id"])
+        restantes = json.load(open(arquivo, encoding="utf-8"))["tarefas"]
+        check("concluir tarefa simples apaga",
+              all(t["id"] != simples["id"] for t in restantes))
+
+        server.tool_cancelar(restantes[0]["id"])
+        check("cancelar apaga",
+              len(json.load(open(arquivo, encoding="utf-8"))["tarefas"]) == len(restantes) - 1)
+
+        try:
+            server.tool_concluir(9999)
+            ok = False
+        except ValueError:
+            ok = True
+        check("id inexistente vira ValueError", ok)
+    finally:
+        server.TAREFAS_FILE, server.DATA_DIR = original_arquivo, original_data
+        shutil.rmtree(pasta, ignore_errors=True)
+
+
+def testa_sincronizar():
+    print("\nSincronizar (num repositorio de mentira):")
+    import tempfile
+    pasta = tempfile.mkdtemp()
+    dados = os.path.join(pasta, "data")
+    os.makedirs(dados)
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", pasta] + args, capture_output=True, timeout=30)
+
+    guardado = (server.ROOT, server.DATA_DIR, server.TAREFAS_FILE)
+    server.ROOT, server.DATA_DIR = pasta, dados
+    server.TAREFAS_FILE = os.path.join(dados, "tarefas.json")
+    try:
+        server.tool_agendar("algo importante", "amanha as 9")
+        resposta = server.tool_sincronizar("teste", enviar=False)
+        log = subprocess.run(["git", "-C", pasta, "log", "--oneline"],
+                             capture_output=True, text=True, timeout=30).stdout
+        check("commita o estado", "teste" in log)
+        check("avisa que nao enviou", "Sem enviar" in resposta)
+        check("segunda chamada nao cria commit vazio",
+              "Nada mudou" in server.tool_sincronizar(enviar=False))
+
+        arquivos = subprocess.run(
+            ["git", "-C", pasta, "show", "--name-only", "--pretty=", "HEAD"],
+            capture_output=True, text=True, timeout=30).stdout
+        check("commita so a pasta data", arquivos.strip() == "data/tarefas.json")
+    finally:
+        server.ROOT, server.DATA_DIR, server.TAREFAS_FILE = guardado
+        shutil.rmtree(pasta, ignore_errors=True)
+
+
 def testa_memoria():
     print("\nMemoria (lembrar/recordar/esquecer):")
     antes = server._load_memory()
@@ -258,6 +396,9 @@ def main():
     testa_calcular()
     testa_hora()
     testa_rede_falsa()
+    testa_datas()
+    testa_agenda()
+    testa_sincronizar()
     testa_memoria()
     testa_cli()
     if FALHAS:

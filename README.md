@@ -28,18 +28,58 @@ aparecem.
 | `clima` | Tempo de uma cidade, via wttr.in. Uma linha, ou a previsão dos próximos dias. |
 | `cotacao` | Câmbio de uma moeda para outra (padrão: para BRL). |
 | `noticias` | Manchetes do momento, opcionalmente sobre um tema. |
+| `agendar` | Marca um lembrete: "amanhã às 9", "todo dia 8h", "dias úteis 7h30". |
+| `pendencias` | O que venceu e o que vem a seguir. |
+| `concluir` | Marca como feito — se repete, já reagenda a próxima. |
+| `cancelar` | Apaga uma tarefa. |
+| `briefing` | Hora, pendências, clima, câmbio e manchetes numa tacada só. |
+| `sincronizar` | Salva agenda e anotações no git, para sobreviverem à sessão. |
 | `lembrar` | Grava uma anotação em `data/memory.json`. |
 | `recordar` | Lê as anotações (sem argumento, lista todas). |
 | `esquecer` | Apaga uma anotação. |
 
-As quatro primeiras funcionam offline e sempre. `clima`, `cotacao` e
-`noticias` saem para a internet — leia a seção **Rede** antes de contar com
-elas.
+Só três saem para a internet — `clima`, `cotacao` e `noticias`. Todo o resto
+funciona offline, inclusive a agenda inteira. Leia a seção **Rede** antes de
+contar com as três.
 
 Sobre `lembrar`: o container é descartado quando a sessão termina, então a
 anotação só sobrevive de verdade **depois de um commit**. Peça "commita a
 memória" ao terminar, ou trate `data/memory.json` como um arquivo comum do
 repositório.
+
+## A agenda, e o problema de o container morrer
+
+O `agendar` entende data escrita como se fala:
+
+```
+agendar "ligar para a clínica"  "amanhã às 9"
+agendar "tomar remédio"         "todo dia 8h"
+agendar "pagar aluguel"         "todo mês dia 10"
+agendar "academia"              "dias úteis 7h30"
+agendar "reunião"               "sexta 14h"      /  "em 2 horas"  /  "2026-09-10 08:00"
+```
+
+Concluir uma tarefa que se repete **não** a apaga: já deixa a próxima
+ocorrência marcada. `pendencias` separa o que venceu do que vem a seguir.
+
+**O fuso importa.** O container roda em UTC, e você não. As datas são
+resolvidas em `America/Sao_Paulo` — mude com a variável de ambiente
+`FAZTUDO_TZ` se for o seu caso.
+
+**E o container é descartado no fim da sessão.** Uma tarefa agendada mora em
+`data/tarefas.json`, que só existe de verdade depois de um commit. Daí a
+ferramenta `sincronizar`: ela commita `data/` (e só `data/`) e empurra para o
+remoto. Sem ela, o que você marcou some junto com a sessão. Peça
+"sincroniza" ao terminar a conversa — ou deixe o Claude chamar sozinho, que é
+o que a descrição da ferramenta pede a ele.
+
+Se o servidor estiver rodando num lugar que fica de pé (Termux, um servidor
+seu), dá para fechar o ciclo com o `cron` de verdade — o que faz jus ao nome
+do repositório:
+
+```
+0 7 * * *  python3 ~/faztudo/server.py --call pendencias periodo=hoje
+```
 
 Sobre `calcular`: não é um `eval()` disfarçado. A expressão é lida como
 árvore sintática e só passa o que está numa lista fechada — números,
@@ -182,3 +222,4 @@ para fora (`clima`) é testada com um dublê no lugar do `http`.
 - `.mcp.json` — registra o servidor para este projeto
 - `.claude/settings.json` — marca o servidor como habilitado
 - `data/memory.json` — as anotações do `lembrar`
+- `data/tarefas.json` — a agenda do `agendar`
