@@ -67,6 +67,7 @@ def _save_memory(memory):
     tmp = MEMORY_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(memory, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        fh.write("\n")  # arquivo versionado: diff limpo no git
     os.replace(tmp, MEMORY_FILE)
 
 
@@ -222,6 +223,36 @@ def tool_esquecer(chave):
 # ---------------------------------------------------------------- protocolo
 
 
+def _log(msg):
+    """Diagnostico vai para stderr: stdout e exclusivo do JSON-RPC."""
+    sys.stderr.write("[%s] %s\n" % (SERVER_NAME, msg))
+    sys.stderr.flush()
+
+
+def _validar(name, args):
+    """Acha a ferramenta e confere os argumentos. Levanta se algo nao bate."""
+    spec = TOOLS.get(name)
+    if spec is None:
+        raise LookupError("ferramenta desconhecida: %s" % name)
+
+    schema = spec["inputSchema"]
+    faltando = [k for k in schema["required"] if k not in args]
+    if faltando:
+        raise ValueError("faltam argumentos obrigatorios: %s" % ", ".join(faltando))
+    sobrando = [k for k in args if k not in schema["properties"]]
+    if sobrando:
+        raise ValueError(
+            "argumentos desconhecidos: %s (aceita: %s)"
+            % (", ".join(sorted(sobrando)), ", ".join(sorted(schema["properties"])))
+        )
+    return spec
+
+
+def _chamar(name, args):
+    """Valida e executa. Usado pela linha de comando e pelos testes."""
+    return _validar(name, args)["fn"](**args)
+
+
 def _handle(method, params):
     """Devolve o 'result' de uma requisicao, ou levanta excecao."""
     if method == "initialize":
@@ -243,15 +274,28 @@ def _handle(method, params):
             ]
         }
 
+    # Alguns clientes pedem estas listas mesmo sem o servidor anunciar as
+    # capacidades. Responder vazio e mais barato que devolver erro.
+    if method == "resources/list":
+        return {"resources": []}
+    if method == "resources/templates/list":
+        return {"resourceTemplates": []}
+    if method == "prompts/list":
+        return {"prompts": []}
+
     if method == "tools/call":
         name = params.get("name")
-        spec = TOOLS.get(name)
-        if spec is None:
-            raise LookupError("ferramenta desconhecida: %s" % name)
+        if not isinstance(name, str):
+            raise ValueError("'name' ausente ou invalido em tools/call")
         args = params.get("arguments") or {}
+        if not isinstance(args, dict):
+            raise ValueError("'arguments' precisa ser um objeto")
+        # Ferramenta inexistente ou argumento errado sao erros de protocolo;
+        # o que a ferramenta faz depois e resultado, com isError.
+        spec = _validar(name, args)
         try:
             text = spec["fn"](**args)
-        except Exception as exc:  # erro da ferramenta != erro de protocolo
+        except Exception as exc:
             return {
                 "content": [{"type": "text", "text": "%s: %s" % (type(exc).__name__, exc)}],
                 "isError": True,
@@ -261,43 +305,111 @@ def _handle(method, params):
     raise LookupError("metodo desconhecido: %s" % method)
 
 
+def _responder(msg):
+    """Monta a resposta JSON-RPC de uma mensagem ja decodificada."""
+    msg_id = msg.get("id")
+    method = msg.get("method")
+
+    if not isinstance(method, str):
+        return {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "error": {"code": -32600, "message": "requisicao sem 'method'"},
+        }
+
+    try:
+        return {"jsonrpc": "2.0", "id": msg_id, "result": _handle(method, msg.get("params") or {})}
+    except LookupError as exc:
+        codigo, texto = -32601, str(exc)
+    except ValueError as exc:
+        codigo, texto = -32602, str(exc)
+    except Exception as exc:
+        codigo, texto = -32603, "%s: %s" % (type(exc).__name__, exc)
+    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": codigo, "message": texto}}
+
+
 def main():
+    # stdout e do protocolo: um print perdido dentro de uma ferramenta
+    # corromperia o stream, entao mandamos os prints para stderr.
     out = sys.stdout
+    sys.stdout = sys.stderr
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
+
         try:
             msg = json.loads(line)
         except ValueError:
-            continue
-
-        method = msg.get("method")
-        msg_id = msg.get("id")
-
-        # Notificacoes (sem id) nao recebem resposta.
-        if msg_id is None:
-            continue
+            response = {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": "JSON invalido"},
+            }
+        else:
+            if not isinstance(msg, dict):
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "requisicao precisa ser um objeto"},
+                }
+            elif msg.get("id") is None:
+                continue  # notificacao: nao recebe resposta
+            else:
+                response = _responder(msg)
 
         try:
-            result = _handle(method, msg.get("params") or {})
-            response = {"jsonrpc": "2.0", "id": msg_id, "result": result}
-        except LookupError as exc:
-            response = {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {"code": -32601, "message": str(exc)},
-            }
-        except Exception as exc:
-            response = {
-                "jsonrpc": "2.0",
-                "id": msg_id,
-                "error": {"code": -32603, "message": "%s: %s" % (type(exc).__name__, exc)},
-            }
+            out.write(json.dumps(response, ensure_ascii=False) + "\n")
+            out.flush()
+        except BrokenPipeError:
+            return  # cliente desligou: sair em silencio
 
-        out.write(json.dumps(response, ensure_ascii=False) + "\n")
-        out.flush()
+
+# ------------------------------------------------------------ linha de comando
+
+
+USO = """uso:
+  python3 server.py                      fala MCP por stdio (o modo normal)
+  python3 server.py --tools              lista as ferramentas registradas
+  python3 server.py --call NOME k=v ...  chama uma ferramenta na mao
+"""
+
+
+def cli(argv):
+    if argv[0] == "--tools":
+        for nome, spec in sorted(TOOLS.items()):
+            obrig = spec["inputSchema"]["required"]
+            args = ", ".join(
+                k if k in obrig else "%s?" % k
+                for k in spec["inputSchema"]["properties"]
+            )
+            print("%s(%s)\n    %s\n" % (nome, args, spec["description"]))
+        return 0
+
+    if argv[0] == "--call":
+        if len(argv) < 2:
+            print(USO, end="")
+            return 2
+        args = {}
+        for par in argv[2:]:
+            chave, igual, valor = par.partition("=")
+            if not igual:
+                print("argumento precisa ser chave=valor: %s" % par)
+                return 2
+            args[chave] = valor
+        try:
+            print(_chamar(argv[1], args))
+        except Exception as exc:
+            print("%s: %s" % (type(exc).__name__, exc))
+            return 1
+        return 0
+
+    print(USO, end="")
+    return 0 if argv[0] in ("-h", "--help") else 2
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        sys.exit(cli(sys.argv[1:]))
     main()

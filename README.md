@@ -65,9 +65,30 @@ só o corpo da resposta (sem os cabeçalhos que o `http` inclui) e um
 ## Testar
 
 ```sh
-python3 test_server.py     # suíte de testes
-claude mcp list            # confere se o Claude enxerga o servidor
+python3 test_server.py                        # suíte de testes
+python3 server.py --tools                     # lista as ferramentas registradas
+python3 server.py --call clima cidade=Lisboa  # chama uma ferramenta na mão
+claude mcp list                               # confere se o Claude enxerga o servidor
 ```
+
+`--tools` e `--call` existem para o caso do celular: dá para conferir se a
+ferramenta nova funciona direto no terminal, sem subir um cliente MCP nem
+reiniciar a sessão. Os testes não tocam a rede — a única ferramenta que sai
+para fora (`clima`) é testada com um dublê no lugar do `http`.
+
+## O que o servidor garante
+
+- **stdout é só do protocolo.** Um `print` perdido dentro de uma ferramenta
+  vai para o stderr em vez de corromper o stream JSON-RPC.
+- **Erro de protocolo e erro de ferramenta são coisas diferentes.**
+  Ferramenta inexistente, argumento obrigatório faltando ou argumento
+  desconhecido viram erro JSON-RPC (`-32601`/`-32602`), com a mensagem
+  dizendo o que era esperado. Já uma ferramenta que roda e falha devolve um
+  resultado normal com `isError: true` — é informação para o Claude, não
+  quebra da sessão.
+- **JSON inválido, requisição sem `method`, linha em branco, cliente que
+  desliga no meio:** todos tratados, sem derrubar o servidor.
+- **Notificações não recebem resposta**, como manda o JSON-RPC.
 
 ## Arquivos
 
