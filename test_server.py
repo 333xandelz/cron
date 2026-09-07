@@ -119,7 +119,11 @@ def testa_clima():
         curto = server.tool_clima("Sao Paulo")
         server.tool_clima("Sao Paulo", formato="completo")
         server.tool_http = lambda url, **kw: "404 Not Found\nX: 1\n\nUnknown location"
-        erro = server.tool_clima("Xpto")
+        try:
+            server.tool_clima("Xpto")
+            erro = "nao levantou"
+        except RuntimeError as exc:
+            erro = str(exc)
     finally:
         server.tool_http = original
 
@@ -129,7 +133,90 @@ def testa_clima():
     check("formato completo pede a previsao", "format=3" not in chamadas[1][0])
     check("pede texto puro ao wttr.in",
           "curl" in chamadas[0][1].get("headers", {}).get("User-Agent", ""))
-    check("status nao-2xx aparece na resposta", "404" in erro)
+    check("status nao-2xx vira erro da ferramenta", "404" in erro)
+
+
+def testa_calcular():
+    print("\nFerramenta calcular:")
+    check("conta simples", server.tool_calcular("2 + 3 * 4").endswith("= 14"))
+    check("funcao matematica",
+          server.tool_calcular("sqrt(16)").endswith("= 4"))
+    check("precedencia e parenteses",
+          server.tool_calcular("(1200 * 1.07 ** 3) / 12").startswith("(1200"))
+    check("negativo unario", server.tool_calcular("-5 + 2").endswith("= -3"))
+
+    def recusa(expressao):
+        try:
+            server.tool_calcular(expressao)
+            return False
+        except ValueError:
+            return True
+
+    check("recusa __import__", recusa("__import__('os').system('id')"))
+    check("recusa abrir arquivo", recusa("open('/etc/passwd').read()"))
+    check("recusa acesso a atributo", recusa("(1).__class__"))
+    check("recusa nome desconhecido", recusa("exit"))
+    check("recusa string", recusa("'abc' * 3"))
+    check("sintaxe invalida vira ValueError", recusa("2 +"))
+
+
+def testa_hora():
+    print("\nFerramenta hora:")
+    check("sem lugar mostra UTC", server.tool_hora().startswith("UTC:"))
+    check("nome IANA direto", "Asia/Tokyo" in server.tool_hora("Asia/Tokyo"))
+    check("nome em ingles", "Asia/Tokyo" in server.tool_hora("Tokyo"))
+    check("nome em portugues com acento", "Asia/Tokyo" in server.tool_hora("Tóquio"))
+    check("cidade portuguesa", "Europe/Lisbon" in server.tool_hora("Lisboa"))
+    check("espaco no nome", "America/Sao_Paulo" in server.tool_hora("são paulo"))
+    check("mostra o deslocamento de UTC", "UTC+" in server.tool_hora("Tokyo"))
+    try:
+        server.tool_hora("Narnia")
+        ok = False
+    except ValueError:
+        ok = True
+    check("lugar inexistente vira ValueError", ok)
+
+
+def testa_rede_falsa():
+    print("\nFerramentas de rede (com duble):")
+    original = server.tool_http
+
+    cotacao_json = (
+        '200 OK\nC: 1\n\n{"USDBRL": {"code":"USD","codein":"BRL","bid":"5.42",'
+        '"low":"5.40","high":"5.49","pctChange":"-0.31",'
+        '"create_date":"2026-09-07 19:00:00"}}'
+    )
+    rss = (
+        "200 OK\nC: 1\n\n<?xml version='1.0'?><rss><channel>"
+        "<item><title>Primeira manchete</title><pubDate>Mon, 07 Sep 2026</pubDate></item>"
+        "<item><title>Segunda manchete</title></item>"
+        "<item><title>Terceira manchete</title></item>"
+        "</channel></rss>"
+    )
+    try:
+        server.tool_http = lambda url, **kw: cotacao_json
+        cotacao = server.tool_cotacao("usd")
+        server.tool_http = lambda url, **kw: rss
+        noticias = server.tool_noticias(quantidade=2)
+
+        def bloqueado(url, **kw):
+            raise server.urllib.error.URLError("Tunnel connection failed: 403 Forbidden")
+
+        server.tool_http = bloqueado
+        try:
+            server.tool_cotacao("USD")
+            proxy = "nao levantou"
+        except RuntimeError as exc:
+            proxy = str(exc)
+    finally:
+        server.tool_http = original
+
+    check("cotacao le o par e a variacao", "5.42" in cotacao and "-0.31" in cotacao)
+    check("cotacao normaliza a moeda para maiuscula", "USD/BRL" in cotacao)
+    check("noticias lista manchetes", "Primeira manchete" in noticias)
+    check("noticias respeita a quantidade", "Terceira" not in noticias)
+    check("bloqueio do proxy vira mensagem explicando",
+          "politica de rede" in proxy and "awesomeapi" in proxy)
 
 
 def testa_memoria():
@@ -168,6 +255,9 @@ def testa_cli():
 def main():
     testa_protocolo()
     testa_clima()
+    testa_calcular()
+    testa_hora()
+    testa_rede_falsa()
     testa_memoria()
     testa_cli()
     if FALHAS:

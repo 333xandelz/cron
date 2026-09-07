@@ -9,14 +9,27 @@ Para adicionar uma ferramenta nova, veja o final do arquivo: basta um
 decorador @tool(...) sobre uma funcao.
 """
 
+import ast
 import json
+import math
 import os
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+
+try:  # zoneinfo e 3.9+; sem ele a ferramenta 'hora' fica so no UTC/local
+    from zoneinfo import ZoneInfo, available_timezones
+except ImportError:  # pragma: no cover
+    ZoneInfo = None
+
+    def available_timezones():
+        return set()
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "faztudo"
@@ -137,6 +150,31 @@ def tool_http(url, method="GET", body=None, headers=None, timeout=30):
     return "%s\n%s\n\n%s" % (status, head, payload)
 
 
+# --------------------------------------------------------------- auxiliares
+
+
+def _corpo_http(url, **kwargs):
+    """GET que devolve so o corpo e traduz falha de rede em texto claro."""
+    dominio = urllib.parse.urlsplit(url).netloc
+    try:
+        resposta = tool_http(url, **kwargs)
+    except urllib.error.URLError as exc:
+        motivo = str(getattr(exc, "reason", exc))
+        if "403" in motivo or "Tunnel" in motivo:
+            raise RuntimeError(
+                "a politica de rede deste ambiente bloqueia %s. Libere o "
+                "dominio nas configuracoes do ambiente (ou rode o servidor "
+                "num lugar sem esse filtro)." % dominio
+            )
+        raise RuntimeError("nao consegui alcancar %s: %s" % (dominio, motivo))
+
+    cabecalho, _, corpo = resposta.partition("\n\n")
+    status = cabecalho.split("\n", 1)[0]
+    if not status.startswith("2"):
+        raise RuntimeError("%s respondeu %s\n%s" % (dominio, status, corpo.strip()[:400]))
+    return corpo
+
+
 @tool(
     "clima",
     "Consulta o clima de uma cidade (via wttr.in). Use quando perguntarem "
@@ -161,12 +199,236 @@ def tool_clima(cidade, formato="curto"):
     else:
         url = "https://wttr.in/%s?format=3&lang=pt" % destino
     # wttr.in so devolve texto puro para clientes de terminal.
-    resposta = tool_http(url, headers={"User-Agent": "curl/8.0"})
-    cabecalho, _, corpo = resposta.partition("\n\n")
-    status = cabecalho.split("\n", 1)[0]
-    if not status.startswith("2"):
-        return "wttr.in respondeu %s\n%s" % (status, corpo.strip())
-    return corpo.strip() or resposta
+    return _corpo_http(url, headers={"User-Agent": "curl/8.0"}).strip()
+
+
+@tool(
+    "calcular",
+    "Avalia uma expressao matematica e devolve o resultado. Aceita + - * / "
+    "// % **, parenteses e funcoes como sqrt, log, sin, cos, abs, round, "
+    "min, max, alem de pi e e. Use em vez de fazer a conta de cabeca.",
+    {
+        "expressao": {
+            "type": "string",
+            "description": "Ex: (1200 * 1.07 ** 3) / 12, sqrt(2), log(1000, 10)",
+        }
+    },
+    ["expressao"],
+)
+def tool_calcular(expressao):
+    # eval() aceitaria qualquer codigo; aqui so passa o que esta na lista.
+    nomes = {
+        "pi": math.pi, "e": math.e, "tau": math.tau, "inf": math.inf,
+        "sqrt": math.sqrt, "log": math.log, "log2": math.log2, "log10": math.log10,
+        "exp": math.exp, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+        "asin": math.asin, "acos": math.acos, "atan": math.atan,
+        "floor": math.floor, "ceil": math.ceil, "fabs": math.fabs,
+        "factorial": math.factorial, "hypot": math.hypot, "degrees": math.degrees,
+        "radians": math.radians, "abs": abs, "round": round, "min": min,
+        "max": max, "sum": sum, "pow": pow,
+    }
+    binarios = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)
+
+    def avaliar(no):
+        if isinstance(no, ast.Expression):
+            return avaliar(no.body)
+        if isinstance(no, ast.Constant):
+            if isinstance(no.value, (int, float)):
+                return no.value
+            raise ValueError("so numeros: %r nao vale" % (no.value,))
+        if isinstance(no, ast.BinOp) and isinstance(no.op, binarios):
+            return _OPERADORES[type(no.op)](avaliar(no.left), avaliar(no.right))
+        if isinstance(no, ast.UnaryOp) and isinstance(no.op, (ast.UAdd, ast.USub)):
+            valor = avaliar(no.operand)
+            return valor if isinstance(no.op, ast.UAdd) else -valor
+        if isinstance(no, ast.Name) and no.id in nomes:
+            return nomes[no.id]
+        if isinstance(no, ast.Call) and isinstance(no.func, ast.Name):
+            funcao = nomes.get(no.func.id)
+            if not callable(funcao):
+                raise ValueError("funcao nao permitida: %s" % no.func.id)
+            if no.keywords:
+                raise ValueError("argumentos nomeados nao sao aceitos")
+            return funcao(*[avaliar(a) for a in no.args])
+        if isinstance(no, (ast.Tuple, ast.List)):
+            return [avaliar(x) for x in no.elts]
+        raise ValueError("expressao nao permitida perto de %r" % ast.dump(no)[:40])
+
+    try:
+        arvore = ast.parse(expressao, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError("expressao invalida: %s" % exc.msg)
+    resultado = avaliar(arvore)
+    if isinstance(resultado, float) and resultado == int(resultado) and abs(resultado) < 1e15:
+        return "%s = %d" % (expressao.strip(), int(resultado))
+    return "%s = %s" % (expressao.strip(), resultado)
+
+
+_OPERADORES = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.Div: lambda a, b: a / b,
+    ast.FloorDiv: lambda a, b: a // b,
+    ast.Mod: lambda a, b: a % b,
+    ast.Pow: lambda a, b: a ** b,
+}
+
+
+# Os nomes IANA sao em ingles; quem pergunta escreve em portugues.
+FUSOS_PT = {
+    "lisboa": "Europe/Lisbon", "porto": "Europe/Lisbon",
+    "londres": "Europe/London", "paris": "Europe/Paris",
+    "madri": "Europe/Madrid", "madrid": "Europe/Madrid",
+    "roma": "Europe/Rome", "berlim": "Europe/Berlin",
+    "bruxelas": "Europe/Brussels", "amsterda": "Europe/Amsterdam",
+    "viena": "Europe/Vienna", "zurique": "Europe/Zurich",
+    "genebra": "Europe/Zurich", "atenas": "Europe/Athens",
+    "estocolmo": "Europe/Stockholm", "copenhague": "Europe/Copenhagen",
+    "moscou": "Europe/Moscow", "kiev": "Europe/Kyiv",
+    "toquio": "Asia/Tokyo", "pequim": "Asia/Shanghai",
+    "xangai": "Asia/Shanghai", "seul": "Asia/Seoul",
+    "nova_delhi": "Asia/Kolkata", "delhi": "Asia/Kolkata",
+    "dubai": "Asia/Dubai", "jerusalem": "Asia/Jerusalem",
+    "nova_york": "America/New_York", "nova_iorque": "America/New_York",
+    "los_angeles": "America/Los_Angeles", "sao_francisco": "America/Los_Angeles",
+    "cidade_do_mexico": "America/Mexico_City", "havana": "America/Havana",
+    "bogota": "America/Bogota", "lima": "America/Lima",
+    "santiago": "America/Santiago", "montevideu": "America/Montevideo",
+    "buenos_aires": "America/Argentina/Buenos_Aires",
+    "brasilia": "America/Sao_Paulo", "sao_paulo": "America/Sao_Paulo",
+    "rio": "America/Sao_Paulo", "rio_de_janeiro": "America/Sao_Paulo",
+    "belo_horizonte": "America/Sao_Paulo", "curitiba": "America/Sao_Paulo",
+    "porto_alegre": "America/Sao_Paulo", "salvador": "America/Bahia",
+    "recife": "America/Recife", "fortaleza": "America/Fortaleza",
+    "belem": "America/Belem", "manaus": "America/Manaus",
+    "cuiaba": "America/Cuiaba", "campo_grande": "America/Campo_Grande",
+    "cairo": "Africa/Cairo", "luanda": "Africa/Luanda",
+    "maputo": "Africa/Maputo", "joanesburgo": "Africa/Johannesburg",
+    "sidney": "Australia/Sydney", "sydney": "Australia/Sydney",
+}
+
+
+def _simplificar(texto):
+    """'Tóquio' -> 'toquio': sem acento, minusculo, espaco vira _."""
+    sem_acento = "".join(
+        c for c in unicodedata.normalize("NFD", texto)
+        if unicodedata.category(c) != "Mn"
+    )
+    return sem_acento.strip().replace(" ", "_").replace("-", "_").lower()
+
+
+def _achar_fuso(lugar):
+    """Aceita 'Tóquio', 'sao paulo' ou 'Asia/Tokyo' e devolve o fuso IANA."""
+    alvo = _simplificar(lugar)
+    if alvo in FUSOS_PT:
+        return FUSOS_PT[alvo]
+
+    fusos = available_timezones()
+    for nome in fusos:
+        if _simplificar(nome) == alvo:
+            return nome
+    candidatos = [n for n in fusos if _simplificar(n.rsplit("/", 1)[-1]) == alvo]
+    if not candidatos:
+        candidatos = [n for n in fusos if alvo in _simplificar(n.rsplit("/", 1)[-1])]
+    if not candidatos:
+        raise ValueError(
+            "nao conheco o fuso '%s'. Tente o nome IANA, ex: America/Sao_Paulo." % lugar
+        )
+    return sorted(candidatos, key=len)[0]
+
+
+@tool(
+    "hora",
+    "Diz que horas sao agora, em UTC e no lugar pedido. Use para 'que horas "
+    "sao em Tokyo', diferenca de fuso, ou so a data de hoje.",
+    {
+        "lugar": {
+            "type": "string",
+            "description": "Cidade ou fuso IANA, ex: Tokyo, Lisboa, America/Sao_Paulo",
+        }
+    },
+)
+def tool_hora(lugar=None):
+    agora = datetime.now(timezone.utc)
+    linhas = ["UTC:   " + agora.strftime("%Y-%m-%d %H:%M (%a)")]
+    if lugar:
+        if ZoneInfo is None:
+            raise RuntimeError("este Python nao tem zoneinfo (precisa de 3.9+)")
+        fuso = _achar_fuso(lugar)
+        local = agora.astimezone(ZoneInfo(fuso))
+        deslocamento = local.utcoffset().total_seconds() / 3600
+        linhas.append(
+            "%s: %s  (UTC%+g)"
+            % (fuso, local.strftime("%Y-%m-%d %H:%M (%a)"), deslocamento)
+        )
+    return "\n".join(linhas)
+
+
+@tool(
+    "cotacao",
+    "Cotacao de uma moeda em relacao a outra (dolar, euro, bitcoin...). "
+    "Use quando perguntarem quanto vale ou quanto esta o cambio.",
+    {
+        "de": {"type": "string", "description": "Moeda de origem, ex: USD, EUR, BTC"},
+        "para": {"type": "string", "description": "Moeda de destino (padrao BRL)"},
+    },
+    ["de"],
+)
+def tool_cotacao(de, para="BRL"):
+    par = "%s-%s" % (de.strip().upper(), para.strip().upper())
+    corpo = _corpo_http("https://economia.awesomeapi.com.br/json/last/%s" % par)
+    try:
+        dados = json.loads(corpo)
+    except ValueError:
+        raise RuntimeError("resposta da API nao era JSON: %s" % corpo[:200])
+    chave = par.replace("-", "")
+    if chave not in dados:
+        raise ValueError("par de moedas desconhecido: %s" % par)
+    d = dados[chave]
+    return "%s/%s: %s (min %s, max %s, variacao %s%%) — %s" % (
+        d.get("code"), d.get("codein"), d.get("bid"), d.get("low"),
+        d.get("high"), d.get("pctChange"), d.get("create_date"),
+    )
+
+
+@tool(
+    "noticias",
+    "Manchetes do momento, opcionalmente sobre um tema. Use quando "
+    "perguntarem o que esta acontecendo ou pedirem noticias de algo.",
+    {
+        "tema": {"type": "string", "description": "Assunto, ex: eleicoes, Palmeiras"},
+        "quantidade": {"type": "number", "description": "Quantas manchetes (padrao 8)"},
+    },
+)
+def tool_noticias(tema=None, quantidade=8):
+    base = "https://news.google.com/rss"
+    idioma = "hl=pt-BR&gl=BR&ceid=BR:pt-419"
+    if tema:
+        url = "%s/search?q=%s&%s" % (base, urllib.parse.quote(tema.strip()), idioma)
+    else:
+        url = "%s?%s" % (base, idioma)
+
+    corpo = _corpo_http(url, headers={"User-Agent": "curl/8.0"})
+    try:
+        raiz = ET.fromstring(corpo)
+    except ET.ParseError as exc:
+        raise RuntimeError("nao consegui ler o feed RSS: %s" % exc)
+
+    manchetes = []
+    for item in raiz.iter("item"):
+        titulo = (item.findtext("title") or "").strip()
+        if not titulo:
+            continue
+        quando = (item.findtext("pubDate") or "").strip()
+        manchetes.append("- %s%s" % (titulo, "  [%s]" % quando if quando else ""))
+        if len(manchetes) >= max(1, int(quantidade)):
+            break
+
+    if not manchetes:
+        return "Nenhuma manchete encontrada%s." % (" para '%s'" % tema if tema else "")
+    cabecalho = "Manchetes sobre '%s':" % tema if tema else "Manchetes do momento:"
+    return cabecalho + "\n" + "\n".join(manchetes)
 
 
 @tool(
