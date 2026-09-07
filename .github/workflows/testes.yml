@@ -1,0 +1,23 @@
+name: testes
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # O servidor promete rodar em qualquer Python 3.8+; a matriz cobra isso.
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Suite (sem rede, sem dependencia)
+        run: python3 test_server.py
+      - name: O servidor sobe e lista as ferramentas
+        run: python3 server.py --tools
