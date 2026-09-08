@@ -46,6 +46,20 @@ diferente:
 - **Termux:Widget** — põe o atalho `Assistente` na tela inicial. Sem ele, o
   arquivo em `~/.shortcuts` existe mas não vira widget.
 
+## O aviso do Play Protect
+
+Ao instalar o APK, o Android mostra **"App de risco bloqueado — esse app foi
+criado para uma versão mais antiga do Android"**. Parece um impedimento, mas
+não é: acima do botão grande **Entendi** há um texto discreto,
+**"Instalar assim mesmo"**. É nele que se toca. O botão que salta aos olhos
+é o que cancela.
+
+O aviso é literalmente verdadeiro, e a razão é a própria natureza do app: a
+partir do Android 10, um app que declara alvo moderno fica proibido de
+executar binários da sua pasta de dados. O Termux mantém alvo antigo de
+propósito — sem isso não rodaria Python nem Node, ou seja, não seria um
+terminal.
+
 ## Comece com um app só
 
 Não precisa instalar tudo de uma vez. **Só com o Termux, sem nenhum
