@@ -808,9 +808,25 @@ def testa_ferramentas_novas():
 
         resposta = server.tool_quando("sexta")
         check("quando diz o dia da semana e a distancia",
-              "sexta" in resposta and "daqui a" in resposta)
-        check("quando entende data no passado", "faz" in server.tool_quando("em 0 dias")
-              or "daqui" in server.tool_quando("em 0 dias"))
+              "sexta" in resposta and ("daqui a" in resposta or "amanha" in resposta))
+
+        # Conta em dias de calendario: de segunda a sexta sao 4, nao 3.
+        from datetime import datetime, timedelta
+        agora = datetime(2026, 9, 7, 21, 10, tzinfo=server._fuso_local())
+        original = server._agora
+        server._agora = lambda: agora
+        try:
+            check("distancia conta dias de calendario, nao blocos de 24h",
+                  "daqui a 4 dias" in server.tool_quando("sexta"))
+            check("hoje mais tarde aparece como hoje",
+                  server.tool_quando("23h").startswith("segunda")
+                  and "hoje" in server.tool_quando("23h"))
+            check("amanha e dito por extenso", "amanha" in server.tool_quando("amanha 9h"))
+            check("data passada diz ha quanto tempo",
+                  "faz" in server.tool_quando("2026-09-01 09:00")
+                  or "ontem" in server.tool_quando("2026-09-01 09:00"))
+        finally:
+            server._agora = original
 
         senha = server.tool_senha(24).split("\n")[0]
         check("senha tem o tamanho pedido", len(senha) == 24)

@@ -56,6 +56,10 @@ Tres habitos que mudam o resultado:
 3. FECHE com 'sincronizar'. O que nao foi commitado morre com a sessao. Faca
    isso sem ser pedido, depois de agendar ou anotar algo que importa.
 
+DATAS E HORAS NAO SE CALCULAM DE CABECA. O seu relogio esta em UTC; o do
+usuario, nao. Das 21h a meia-noite no Brasil voce erra o dia inteiro. Antes
+de dizer que dia e hoje, ou que dia cai a sexta, chame 'hora' ou 'quando'.
+
 Procurando algo do passado: 'recordar' se souber o nome, 'buscar' se nao
 souber — ela varre anotacoes e tarefas pelo conteudo.
 
@@ -420,8 +424,10 @@ def tool_buscar(termo, onde="tudo"):
     "quando",
     "Resolve uma data dita em portugues e diz em que dia cai e quanto falta. "
     "Use para 'que dia cai a sexta que vem?', 'quantos dias ate o Natal?', "
-    "'faz quanto tempo desde 01/01?'. Nao agenda nada — para marcar um "
-    "lembrete, use 'agendar'.",
+    "'faz quanto tempo desde 01/01?'. NAO calcule datas de cabeca: o seu "
+    "relogio esta em UTC e o do usuario nao, entao perto da meia-noite voce "
+    "erra o dia inteiro. Esta ferramenta usa o fuso certo. Nao agenda nada — "
+    "para marcar um lembrete, use 'agendar'.",
     {
         "data": {
             "type": "string",
@@ -434,17 +440,20 @@ def tool_quando(data):
     agora = _agora()
     momento = _interpretar_quando(data, agora)
     distancia = momento - agora
-    dias = distancia.days
-    horas = distancia.seconds // 3600
+    # Gente conta dias no calendario, nao em blocos de 24h: de segunda a
+    # sexta sao 4 dias, mesmo que falte 3 dias e meio de relogio.
+    dias = (momento.date() - agora.date()).days
 
     if distancia.total_seconds() < 0:
-        passado = agora - momento
-        if passado.days:
-            quanto = "faz %d dia(s)" % passado.days
+        if dias == 0:
+            quanto = "faz %d hora(s)" % ((agora - momento).seconds // 3600)
+        elif dias == -1:
+            quanto = "ontem"
         else:
-            quanto = "faz %d hora(s)" % (passado.seconds // 3600)
+            quanto = "faz %d dias" % abs(dias)
     elif dias == 0:
-        quanto = "daqui a %dh%02d" % (horas, (distancia.seconds % 3600) // 60)
+        horas = distancia.seconds // 3600
+        quanto = "hoje, daqui a %dh%02d" % (horas, (distancia.seconds % 3600) // 60)
     elif dias == 1:
         quanto = "amanha"
     else:
@@ -930,9 +939,10 @@ def _achar_fuso(lugar):
 
 @tool(
     "hora",
-    "Que horas sao AGORA, em UTC e no lugar pedido. Use para 'que horas "
-    "sao em Tokyo' ou diferenca de fuso. Para resolver uma data futura "
-    "('que dia cai a sexta?'), a ferramenta e 'quando'.",
+    "Que horas sao AGORA, em UTC e no lugar pedido. Use antes de afirmar "
+    "que dia ou que horas sao: o seu relogio esta em UTC e o do usuario nao. "
+    "Para resolver uma data futura ('que dia cai a sexta?'), a ferramenta e "
+    "'quando'.",
     {
         "lugar": {
             "type": "string",
