@@ -60,6 +60,30 @@ executar binários da sua pasta de dados. O Termux mantém alvo antigo de
 propósito — sem isso não rodaria Python nem Node, ou seja, não seria um
 terminal.
 
+## A versão do Claude Code importa
+
+Da **v2.1.113** em diante, o Claude Code passou a ser distribuído como um
+binário nativo compilado para **glibc**. O Android usa **Bionic**, a libc
+dele, então esse binário não executa no Termux — e o instalador nem tenta
+baixá-lo, porque ali `process.platform` vale `"android"`, que não está no
+mapa de plataformas dele. O sintoma é este:
+
+```
+Error: claude native binary not installed.
+```
+
+Reinstalar, limpar o cache do npm ou rodar o `install.cjs` à mão **não
+resolve**: não existe build para Android. As saídas conhecidas são fixar a
+**2.1.112**, a última versão em JavaScript puro; usar o `glibc-runner` do
+Termux para carregar o binário `linux-arm64`; ou rodar dentro de um Ubuntu
+via `proot-distro`.
+
+O preparo usa a primeira, por ser a única que não acrescenta camadas: ele
+testa se o `claude` realmente roda — não basta existir no PATH — e, se não
+rodar, instala a versão fixada por cima. Quando o Claude Code voltar a ter
+alternativa em JavaScript, basta subir a variável `VERSAO_CLAUDE` no topo do
+script.
+
 ## Comece com um app só
 
 Não precisa instalar tudo de uma vez. **Só com o Termux, sem nenhum

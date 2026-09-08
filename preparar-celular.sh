@@ -11,6 +11,14 @@
 set -e
 
 AQUI=$(cd "$(dirname "$0")" && pwd)
+
+# Da 2.1.113 em diante o Claude Code distribui um binario nativo compilado
+# para glibc. O Android usa Bionic, entao esse binario nao roda no Termux — e
+# o instalador nem tenta, porque process.platform aqui e "android", que nao
+# esta no mapa dele. 2.1.112 e a ultima versao em JavaScript puro.
+# Antes de subir esta versao, confira se a nova voltou a ter fallback JS.
+VERSAO_CLAUDE=2.1.112
+
 azul() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 # Sem isto, uma falha de rede no meio derruba o script deixando so a
@@ -90,10 +98,27 @@ azul "1/6  Pacotes"
 pkg install -y python nodejs-lts android-tools termux-api git
 
 azul "2/6  Claude Code"
-if command -v claude >/dev/null 2>&1; then
-    echo "ja instalado: $(claude --version 2>/dev/null | head -1)"
+# Existir no PATH nao basta: a versao com binario nativo instala e nao roda.
+claude_roda() {
+    command -v claude >/dev/null 2>&1 && claude --version >/dev/null 2>&1
+}
+
+if claude_roda; then
+    echo "ja instalado e funcionando: $(claude --version 2>/dev/null | head -1)"
 else
-    npm install -g @anthropic-ai/claude-code
+    if command -v claude >/dev/null 2>&1; then
+        echo "Ha um claude instalado, mas ele nao roda aqui — e a versao com"
+        echo "binario nativo glibc, que o Android nao executa."
+        echo "Trocando pela ultima versao em JavaScript puro ($VERSAO_CLAUDE)."
+    fi
+    npm install -g "@anthropic-ai/claude-code@$VERSAO_CLAUDE"
+    if ! claude_roda; then
+        echo
+        echo "O claude ainda nao roda depois de instalar a $VERSAO_CLAUDE."
+        echo "Veja o que ele responde:  claude --version"
+        exit 1
+    fi
+    echo "instalado: $(claude --version 2>/dev/null | head -1)"
 fi
 
 # Sem login o assistente sobe e nao responde nada. Melhor descobrir agora.
