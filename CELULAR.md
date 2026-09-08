@@ -84,6 +84,23 @@ rodar, instala a versão fixada por cima. Quando o Claude Code voltar a ter
 alternativa em JavaScript, basta subir a variável `VERSAO_CLAUDE` no topo do
 script.
 
+### O seletor de modelos fica desatualizado
+
+A 2.1.112 é de antes dos modelos atuais, então o seletor dela só oferece os
+daquela época — e o apelido `opus` resolve para o modelo antigo. Mas o
+**ID completo passa direto para a API** e funciona:
+
+| passado | quem responde |
+|---|---|
+| `--model opus` | um modelo antigo |
+| `--model claude-opus-5` | claude-opus-5 |
+
+Ou seja: não é preciso atualizar a CLI, é preciso parar de usar o apelido. O
+preparo grava o ID completo em `~/.claude/settings.json` (preservando o que
+já estiver lá), e o `assistente.sh` passa `--model` explicitamente. Para
+trocar de modelo, mude `MODELO_PADRAO` no `preparar-celular.sh` e `MODELO` no
+`assistente.sh`.
+
 ## Comece com um app só
 
 Não precisa instalar tudo de uma vez. **Só com o Termux, sem nenhum

@@ -19,6 +19,11 @@ AQUI=$(cd "$(dirname "$0")" && pwd)
 # Antes de subir esta versao, confira se a nova voltou a ter fallback JS.
 VERSAO_CLAUDE=2.1.112
 
+# A 2.1.112 resolve o apelido "opus" para o modelo da epoca dela (4.7), e e
+# so isso que aparece no seletor. O ID completo, porem, passa direto para a
+# API e funciona — entao fixamos o ID em vez do apelido.
+MODELO_PADRAO=claude-opus-5
+
 azul() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
 # Sem isto, uma falha de rede no meio derruba o script deixando so a
@@ -132,6 +137,31 @@ if [ ! -f "$HOME/.claude.json" ] || ! grep -q oauthAccount "$HOME/.claude.json" 
         [Nn]*) echo "Depois, rode: claude   (e siga o login)" ;;
         *) claude || echo "Login nao concluido. Rode 'claude' quando puder." ;;
     esac
+fi
+
+# O seletor desta versao so oferece modelos antigos; escrever o ID completo
+# nas configuracoes vale para todas as sessoes.
+if [ -n "$MODELO_PADRAO" ]; then
+    python3 - "$HOME/.claude/settings.json" "$MODELO_PADRAO" <<'FIM'
+import json, os, sys
+
+caminho, modelo = sys.argv[1], sys.argv[2]
+os.makedirs(os.path.dirname(caminho), exist_ok=True)
+try:
+    with open(caminho, encoding="utf-8") as fh:
+        dados = json.load(fh)
+except (FileNotFoundError, ValueError):
+    dados = {}
+if dados.get("model") == modelo:
+    print("modelo ja definido: %s" % modelo)
+else:
+    anterior = dados.get("model")
+    dados["model"] = modelo          # so esta chave muda; o resto e preservado
+    with open(caminho, "w", encoding="utf-8") as fh:
+        json.dump(dados, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        fh.write("\n")
+    print("modelo padrao: %s%s" % (modelo, " (era %s)" % anterior if anterior else ""))
+FIM
 fi
 
 azul "3/6  Registrando o faztudo em todos os projetos"

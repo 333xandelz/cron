@@ -16,6 +16,10 @@ AQUI=$(cd "$(dirname "$0")" && pwd)
 # pode virar uma ligacao de verdade. Para libera-las, tire daqui.
 FORA="run|ligar|enviar_sms"
 
+# O apelido "opus" cai num modelo antigo nesta versao da CLI; o ID completo
+# passa direto. Troque aqui para usar outro.
+MODELO=claude-opus-5
+
 ferramentas() {
     python3 "$AQUI/server.py" --tools \
         | grep '^[a-z]' | sed 's/(.*//' \
@@ -45,7 +49,8 @@ rodada() {
             return 2 ;;
     esac
 
-    resposta=$(claude -p "$falado" --allowedTools "$(ferramentas)" 2>/dev/null)
+    resposta=$(claude -p "$falado" --model "$MODELO" \
+        --allowedTools "$(ferramentas)" 2>/dev/null)
     [ -n "$resposta" ] || resposta="Nao consegui responder."
     echo "$resposta"
     falar "$resposta"
