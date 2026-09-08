@@ -9,12 +9,19 @@ via Termux.
 ## Instalação
 
 Instale o **Termux** pelo [F-Droid](https://f-droid.org/packages/com.termux/)
-— a versão da Play Store está abandonada e quebra. Depois, no Termux:
+— a versão da Play Store está abandonada e quebra. Abra o app: é um terminal
+preto, com um cursor. É ali que os comandos abaixo vão, digitados ou colados.
+Não no Claude Code: uma sessão do Claude Code na web roda num container na
+nuvem, que não tem nada a ver com o aparelho.
 
-Um comando só, colado no Termux:
+O `-b` na linha abaixo não é detalhe — sem ele o clone traz a branch padrão
+do repositório, que ainda não tem nenhum destes scripts.
+
+Um comando só, colado **no app Termux, no telefone** — não no Claude Code:
 
 ```sh
-pkg install -y git && git clone https://github.com/333xandelz/cron ~/faztudo && sh ~/faztudo/preparar-celular.sh
+pkg install -y git && git clone -b claude/clima-weather-tool-2cb7ac \
+  https://github.com/333xandelz/cron ~/faztudo && sh ~/faztudo/preparar-celular.sh
 ```
 
 Seis passos: pacotes, Claude Code, registro do servidor para todos os
