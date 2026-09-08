@@ -13,6 +13,28 @@ set -e
 AQUI=$(cd "$(dirname "$0")" && pwd)
 azul() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+# Sem isto, uma falha de rede no meio derruba o script deixando so a
+# mensagem crua do pacote — sem dizer onde parou nem o que fazer.
+ao_sair() {
+    codigo=$?
+    [ "$codigo" -eq 0 ] && exit 0
+    echo
+    azul "O preparo parou no passo acima (codigo $codigo)"
+    cat <<FIM
+Nada ficou pela metade de um jeito que atrapalhe: o script e idempotente,
+entao rodar de novo retoma de onde parou.
+
+    sh $0
+
+Se a mensagem acima fala em rede ou host, confira a conexao antes. Para ver
+o que ja esta pronto e o que falta:
+
+    sh $0 --conferir
+FIM
+    exit "$codigo"
+}
+trap ao_sair EXIT
+
 parear() {
     azul "Pareamento do adb com o proprio aparelho"
     cat <<'FIM'
