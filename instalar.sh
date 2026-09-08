@@ -86,9 +86,26 @@ os.replace(tmp, caminho)
 print("'%s' %s: python3 %s" % (nome, "ja registrado" if igual else "registrado", servidor))
 FIM
 
+# Um atalho curto, porque digitar caminho longo no teclado do celular e um
+# castigo — e colar traz os marcadores de bracketed paste junto.
+for destino in "$PREFIX/bin" "$HOME/.local/bin"; do
+    [ -n "$destino" ] && [ -d "$(dirname "$destino")" ] || continue
+    mkdir -p "$destino" 2>/dev/null || continue
+    if printf '#!/bin/sh\nexec python3 "%s" "$@"\n' "$SERVIDOR" > "$destino/$NOME" 2>/dev/null
+    then
+        chmod +x "$destino/$NOME"
+        echo "atalho '$NOME' criado em $destino"
+        case ":$PATH:" in
+            *":$destino:"*) ;;
+            *) echo "  (acrescente $destino ao seu PATH para usa-lo)" ;;
+        esac
+        break
+    fi
+done
+
 echo
 echo "Pronto. As ferramentas do faztudo agora valem para todos os projetos"
 echo "desta maquina. Confira com:"
 echo
-echo "    python3 $SERVIDOR --tools"
-echo "    claude mcp get $NOME"
+echo "    $NOME --tools           lista as ferramentas"
+echo "    $NOME --call celular    diz o que ja funciona no aparelho"

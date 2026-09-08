@@ -117,6 +117,19 @@ O preparo também pega um `termux-wake-lock` ao começar. Se ainda assim
 acontecer: feche outros apps, ligue o carregador e deixe a tela do Termux
 aberta enquanto roda.
 
+### O atalho `faztudo`
+
+O preparo cria um comando curto, porque digitar caminho longo no teclado do
+celular é penoso — e colar traz junto os marcadores de *bracketed paste*
+(`^[[200~` no começo, `~` no fim), que viram erros confusos como
+`python3: command not found`:
+
+```sh
+faztudo --tools           # lista as ferramentas
+faztudo --call celular    # diz o que já funciona no aparelho
+faztudo --call quando data=sexta
+```
+
 ## Comece com um app só
 
 Não precisa instalar tudo de uma vez. **Só com o Termux, sem nenhum
