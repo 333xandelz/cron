@@ -101,6 +101,22 @@ já estiver lá), e o `assistente.sh` passa `--model` explicitamente. Para
 trocar de modelo, mude `MODELO_PADRAO` no `preparar-celular.sh` e `MODELO` no
 `assistente.sh`.
 
+### "Terminated" no meio do preparo
+
+Se um passo termina com **`Terminated`** (ou `Killed`) e mais nada, não foi o
+comando que falhou: foi o **Android matando o processo**. Acontece com
+memória apertada, bateria baixa, ou quando o Termux sai da tela — o
+*phantom process killer* do Android 12+ é o suspeito habitual.
+
+O passo que mais sofria era o registro do servidor, porque `claude mcp add`
+sobe um Node inteiro só para escrever uma entrada num arquivo JSON. O
+`instalar.sh` passa a **escrever essa entrada direto**, com `python3`: é o
+mesmo resultado em milissegundos, sem processo pesado para o sistema matar.
+
+O preparo também pega um `termux-wake-lock` ao começar. Se ainda assim
+acontecer: feche outros apps, ligue o carregador e deixe a tela do Termux
+aberta enquanto roda.
+
 ## Comece com um app só
 
 Não precisa instalar tudo de uma vez. **Só com o Termux, sem nenhum

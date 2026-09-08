@@ -33,6 +33,15 @@ ao_sair() {
     [ "$codigo" -eq 0 ] && exit 0
     echo
     azul "O preparo parou no passo acima (codigo $codigo)"
+    if [ "$codigo" -eq 143 ] || [ "$codigo" -eq 137 ]; then
+        cat <<'FIM'
+"Terminated" ou "Killed" quer dizer que o Android matou o processo, nao que
+o comando falhou. Costuma ser memoria apertada ou o aparelho economizando
+bateria. Ajuda: fechar outros apps, ligar a tomada, e deixar a tela do
+Termux aberta enquanto roda.
+
+FIM
+    fi
     cat <<FIM
 Nada ficou pela metade de um jeito que atrapalhe: o script e idempotente,
 entao rodar de novo retoma de onde parou.
@@ -47,6 +56,13 @@ FIM
     exit "$codigo"
 }
 trap ao_sair EXIT
+
+# O Android mata processo em segundo plano — aparece como "Terminated", sem
+# mais explicacao. O wake-lock reduz muito a chance disso durante a
+# instalacao, que e demorada.
+segurar_aparelho() {
+    command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock 2>/dev/null || true
+}
 
 parear() {
     azul "Pareamento do adb com o proprio aparelho"
@@ -98,6 +114,8 @@ esac
     echo "Aqui nao e Termux — nada a fazer."
     exit 1
 }
+
+segurar_aparelho
 
 azul "1/6  Pacotes"
 pkg install -y python nodejs-lts android-tools termux-api git
