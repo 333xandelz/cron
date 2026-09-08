@@ -30,12 +30,21 @@ gancho do Tasker) e o pareamento do adb. Ele é idempotente — rodar de novo
 não estraga nada — e termina imprimindo o diagnóstico, que diz o que ficou
 faltando.
 
-Dois apps extras, também do F-Droid, cada um com uma função:
+**O login é obrigatório.** O script instala o Claude Code, mas ele começa
+sem conta — e sem conta o assistente sobe e não responde nada. O passo 2 do
+preparo detecta isso e oferece abrir o login: escolha sua conta no navegador
+e volte para o Termux. Se pular, o comando depois é só `claude`.
+
+Três apps extras, todos do F-Droid, cada um com uma função — e todos têm que
+vir do **mesmo lugar** que o Termux, senão o Android recusa por assinatura
+diferente:
 
 - **Termux:API** — sem ele, `notificar`, `falar`, SMS e área de transferência
   não funcionam (o pacote `termux-api` sozinho não basta).
 - **Termux:Boot** — faz o gancho de inicialização rodar. Abra uma vez depois
   de instalar.
+- **Termux:Widget** — põe o atalho `Assistente` na tela inicial. Sem ele, o
+  arquivo em `~/.shortcuts` existe mas não vira widget.
 
 ## As duas camadas de permissão
 

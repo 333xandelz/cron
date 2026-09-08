@@ -74,6 +74,19 @@ else
     npm install -g @anthropic-ai/claude-code
 fi
 
+# Sem login o assistente sobe e nao responde nada. Melhor descobrir agora.
+if [ ! -f "$HOME/.claude.json" ] || ! grep -q oauthAccount "$HOME/.claude.json" 2>/dev/null; then
+    echo
+    echo "Voce ainda nao entrou na sua conta. Sem isso o assistente nao responde."
+    echo "Vou abrir o login: escolha a conta no navegador e volte para o Termux."
+    printf 'Fazer login agora? [S/n] '
+    read -r entrar
+    case "$entrar" in
+        [Nn]*) echo "Depois, rode: claude   (e siga o login)" ;;
+        *) claude || echo "Login nao concluido. Rode 'claude' quando puder." ;;
+    esac
+fi
+
 azul "3/6  Registrando o faztudo em todos os projetos"
 sh "$AQUI/instalar.sh"
 
