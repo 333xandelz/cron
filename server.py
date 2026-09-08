@@ -1348,8 +1348,15 @@ def tool_esquecer(chave):
     "que uma ferramenta do celular falhar.",
 )
 def tool_celular():
-    linhas = ["Onde estou: %s" % ("Android/Termux" if os.path.isdir("/system") else
-                                  "NAO e um Android — nenhuma ferramenta de celular vai funcionar aqui")]
+    # /system sozinho nao basta: o que importa e estar dentro do Termux, que
+    # e quem tem os comandos e as permissoes do aparelho.
+    if os.path.isdir("/data/data/com.termux"):
+        onde = "Termux, no Android — tudo pode funcionar daqui"
+    elif os.path.isdir("/system"):
+        onde = "Android, mas fora do Termux — as ferramentas do termux-api nao existem aqui"
+    else:
+        onde = "NAO e um Android — nenhuma ferramenta de celular vai funcionar aqui"
+    linhas = ["Onde estou: " + onde]
 
     api = [p for p in ("termux-notification", "termux-clipboard-get",
                        "termux-sms-send", "termux-tts-speak", "termux-open-url")

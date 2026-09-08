@@ -64,20 +64,20 @@ esac
     exit 1
 }
 
-azul "1/5  Pacotes"
+azul "1/6  Pacotes"
 pkg install -y python nodejs-lts android-tools termux-api git
 
-azul "2/5  Claude Code"
+azul "2/6  Claude Code"
 if command -v claude >/dev/null 2>&1; then
     echo "ja instalado: $(claude --version 2>/dev/null | head -1)"
 else
     npm install -g @anthropic-ai/claude-code
 fi
 
-azul "3/5  Registrando o faztudo em todos os projetos"
+azul "3/6  Registrando o faztudo em todos os projetos"
 sh "$AQUI/instalar.sh"
 
-azul "4/5  Ligar na inicializacao (opcional)"
+azul "4/6  Ligar na inicializacao (opcional)"
 if [ -d "$HOME/.termux/boot" ] || mkdir -p "$HOME/.termux/boot" 2>/dev/null; then
     cat > "$HOME/.termux/boot/faztudo" <<'FIM'
 #!/data/data/com.termux/files/usr/bin/sh
@@ -90,7 +90,10 @@ FIM
     echo "Para valer, instale o app Termux:Boot (F-Droid) e abra uma vez."
 fi
 
-azul "5/5  Pareamento do adb"
+azul "5/6  Assistente de voz"
+sh "$AQUI/assistente.sh" --instalar
+
+azul "6/6  Pareamento do adb"
 echo "Sem isto, tocar/digitar/ler a tela nao funciona (o resto funciona)."
 printf 'Parear agora? [S/n] '
 read -r resposta
@@ -103,7 +106,17 @@ conferir
 
 azul "Pronto"
 cat <<'FIM'
-Abra o Claude Code em qualquer pasta e peca algo como:
+Para falar com ele, use qualquer uma destas:
+
+  - o widget do Termux:Widget na tela inicial (toque em "Assistente")
+  - o botao "Falar" na notificacao fixa
+  - sh assistente.sh, no terminal
+
+O botao power NAO chama o faztudo: aquele gesto pertence ao assistente
+padrao do Android, e so apps que se declaram assistentes entram naquele
+slot. Para captura-lo e preciso o Tasker — a receita esta no CELULAR.md.
+
+Ou abra o Claude Code em qualquer pasta e peca algo como:
 
   "abre o whatsapp e me diz o que esta na tela"
   "me lembra de tomar remedio todo dia as 8"

@@ -718,6 +718,17 @@ def testa_celular_ausente():
               "pkg install termux-api" in erro_de(server.tool_notificar, "oi"))
         check("diagnostico avisa que nao e Android",
               "NAO e um Android" in server.tool_celular())
+
+        # As tres situacoes possiveis, sem depender do disco desta maquina.
+        original_isdir = os.path.isdir
+        try:
+            os.path.isdir = lambda p: p == "/data/data/com.termux" or original_isdir(p)
+            check("reconhece o Termux", "Termux, no Android" in server.tool_celular())
+            os.path.isdir = lambda p: p == "/system" or original_isdir(p)
+            check("Android fora do Termux e avisado",
+                  "fora do Termux" in server.tool_celular())
+        finally:
+            os.path.isdir = original_isdir
     finally:
         os.environ["PATH"] = path_original
         shutil.rmtree(vazio, ignore_errors=True)

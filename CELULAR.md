@@ -11,15 +11,17 @@ via Termux.
 Instale o **Termux** pelo [F-Droid](https://f-droid.org/packages/com.termux/)
 — a versão da Play Store está abandonada e quebra. Depois, no Termux:
 
+Um comando só, colado no Termux:
+
 ```sh
-pkg install git
-git clone https://github.com/333xandelz/cron ~/faztudo
-sh ~/faztudo/preparar-celular.sh
+pkg install -y git && git clone https://github.com/333xandelz/cron ~/faztudo && sh ~/faztudo/preparar-celular.sh
 ```
 
-O script instala os pacotes, o Claude Code, registra o servidor para todos os
-projetos, cria o gancho de inicialização e conduz o pareamento do adb. Ele é
-idempotente: rodar de novo não estraga nada.
+Seis passos: pacotes, Claude Code, registro do servidor para todos os
+projetos, gancho de inicialização, assistente de voz (widget + notificação +
+gancho do Tasker) e o pareamento do adb. Ele é idempotente — rodar de novo
+não estraga nada — e termina imprimindo o diagnóstico, que diz o que ficou
+faltando.
 
 Dois apps extras, também do F-Droid, cada um com uma função:
 
