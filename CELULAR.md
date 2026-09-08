@@ -94,6 +94,41 @@ O `--instalar` cria duas formas de ativar sem abrir o terminal: um atalho em
 notificação fixa com um botão **Falar**. Tocar em qualquer um dos dois abre o
 microfone.
 
+### Ativar pelo botão power
+
+**Segurar o power não vai chamar o faztudo, e isso não é falha de instalação.**
+Esse gesto aciona o *assistente digital padrão* do Android — um slot do
+sistema que só aceita apps que se declaram assistentes (implementam
+`VoiceInteractionService`). O Termux não faz isso, então "faztudo" jamais
+aparecerá em Ajustes → Apps → Apps padrão → Assistente digital. Se hoje abre
+o ChatGPT, é porque ele está ocupando esse slot.
+
+Há um caminho, e passa pelo **Tasker** (pago, na Play Store), que *é* um app
+capaz de ocupar o slot de assistente:
+
+1. Instale o **Tasker** e o plugin **Termux:Tasker** (F-Droid).
+2. No Tasker, crie uma tarefa `Assistente` com uma única ação:
+   *Plugin → Termux:Tasker*, apontando para o script `assistente`
+   (o `--instalar` já o deixou em `~/.termux/tasker/assistente`).
+3. Crie um perfil com o evento *Event → System → Assistant Request* e ligue-o
+   a essa tarefa.
+4. Em Ajustes → Apps → Apps padrão → **Assistente digital**, troque de
+   ChatGPT para **Tasker**.
+
+Feito isso, segurar o power passa a abrir o nosso microfone.
+
+**Sem Tasker**, as formas de ativar são as que o `--instalar` já cria — e
+nenhuma delas exige app pago:
+
+| forma | como |
+|---|---|
+| widget na tela inicial | Termux:Widget → adicione o widget → toque em `Assistente` |
+| botão na notificação | já fica fixo na barra; funciona até na tela bloqueada |
+| terminal | `sh ~/faztudo/assistente.sh` |
+
+O widget é o mais próximo do gesto do power: um toque, de qualquer tela
+inicial.
+
 **Três ferramentas ficam de fora do modo voz, de propósito:** `run`, `ligar`
 e `enviar_sms`. Reconhecimento de voz erra, e um "liga pra Ana" mal ouvido
 não pode virar uma ligação de verdade — nem um comando de shell arbitrário.

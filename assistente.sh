@@ -60,6 +60,15 @@ case "$1" in
         echo "Atalho criado em ~/.shortcuts/Assistente."
         echo "Adicione o widget do Termux:Widget na tela inicial para ativar por toque."
 
+        # O Termux:Tasker so executa o que estiver nesta pasta. E por aqui que
+        # o botao power chega ate nos: Tasker ocupa o slot de assistente do
+        # Android e chama este script. Veja CELULAR.md.
+        mkdir -p "$HOME/.termux/tasker"
+        printf '#!/data/data/com.termux/files/usr/bin/sh\nsh %s/assistente.sh\n' \
+            "$AQUI" > "$HOME/.termux/tasker/assistente"
+        chmod +x "$HOME/.termux/tasker/assistente"
+        echo "Gancho do Tasker criado em ~/.termux/tasker/assistente."
+
         termux-notification --ongoing --id faztudo \
             -t "faztudo" -c "toque em Falar para conversar" \
             --button1 "Falar" --button1-action "sh $AQUI/assistente.sh" \
@@ -67,7 +76,7 @@ case "$1" in
         ;;
     --remover)
         termux-notification-remove faztudo 2>/dev/null || true
-        rm -f "$HOME/.shortcuts/Assistente"
+        rm -f "$HOME/.shortcuts/Assistente" "$HOME/.termux/tasker/assistente"
         echo "Removido."
         ;;
     --loop)
