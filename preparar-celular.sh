@@ -126,7 +126,10 @@ FIM
 fi
 
 azul "5/6  Assistente de voz"
-sh "$AQUI/assistente.sh" --instalar
+sh "$AQUI/assistente.sh" --instalar || {
+    echo "O assistente nao ficou pronto, mas o resto do preparo continua."
+    echo "Depois: sh $AQUI/assistente.sh --instalar"
+}
 
 azul "6/6  Pareamento do adb"
 echo "Sem isto, tocar/digitar/ler a tela nao funciona (o resto funciona)."

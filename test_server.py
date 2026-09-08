@@ -857,6 +857,116 @@ def testa_ferramentas_novas():
         shutil.rmtree(pasta, ignore_errors=True)
 
 
+def testa_limites_e_escapes():
+    print("\nLimites e entradas hostis:")
+
+    def erro_de(funcao, *args, **kwargs):
+        try:
+            funcao(*args, **kwargs)
+            return ""
+        except Exception as exc:
+            return str(exc)
+
+    # calcular: sem limite, 9**9**9 travava o servidor inteiro (uma so linha
+    # de execucao, sem timeout) e o cliente ficava pendurado.
+    check("expoente absurdo e recusado antes de calcular",
+          "expoente alto demais" in erro_de(server.tool_calcular, "9**9**9"))
+    check("resultado gigante e recusado pelo numero de casas",
+          "casas" in erro_de(server.tool_calcular, "1000000**900"))
+    check("fatorial gigante e recusado",
+          "grande demais" in erro_de(server.tool_calcular, "factorial(9999)"))
+    check("potencia normal continua funcionando",
+          server.tool_calcular("2**10").endswith("= 1024"))
+    check("fatorial normal continua funcionando",
+          server.tool_calcular("factorial(20)").endswith("= 2432902008176640000"))
+
+    # abrir: o nome do pacote ia cru para o shell do aparelho.
+    for hostil in ("com.x; touch /tmp/INVADIU", "com.x && rm -rf /", "com.x`id`",
+                   "com.x $(id)", "com.x|id"):
+        check("abrir recusa %r" % hostil[:22],
+              "invalido" in erro_de(server.tool_abrir, hostil))
+
+    # captura: ".." ou caminho absoluto saiam da pasta de capturas.
+    import tempfile
+    guardado = server.CAPTURAS
+    server.CAPTURAS = tempfile.mkdtemp()
+    try:
+        raiz = os.path.realpath(server.CAPTURAS)
+        for nome in ("../../fuga.png", "/etc/passwd", "..%s..%sx.png" % (os.sep, os.sep)):
+            erro_de(server.tool_captura, nome)  # falha no adb, mas ja decidiu o caminho
+            seguro = os.path.basename(nome.strip())
+            if not seguro.lower().endswith(".png"):
+                seguro += ".png"
+            destino = os.path.realpath(os.path.join(server.CAPTURAS, seguro))
+            check("captura %r nao escapa da pasta" % nome,
+                  destino.startswith(raiz + os.sep))
+        check("captura recusa nome so com pontuacao",
+              "invalido" in erro_de(server.tool_captura, "..."))
+    finally:
+        shutil.rmtree(server.CAPTURAS, ignore_errors=True)
+        server.CAPTURAS = guardado
+
+
+def testa_dias_uteis():
+    print("\nPrimeira ocorrencia de 'dias uteis':")
+    import tempfile
+    from datetime import datetime
+    pasta = tempfile.mkdtemp()
+    guardado = (server.TAREFAS_FILE, server.DATA_DIR, server._agora)
+    server.DATA_DIR = pasta
+    server.TAREFAS_FILE = os.path.join(pasta, "tarefas.json")
+    try:
+        # Sexta a noite: sem correcao, "dias uteis 7h30" caia no sabado.
+        sexta = datetime(2026, 9, 11, 22, 0, tzinfo=server._fuso_local())
+        server._agora = lambda: sexta
+        server.tool_agendar("academia", "dias uteis 7h30")
+        marcada = json.load(open(server.TAREFAS_FILE, encoding="utf-8"))["tarefas"][0]
+        quando = datetime.fromisoformat(marcada["quando"])
+        check("nao cai no fim de semana", quando.weekday() < 5)
+        check("cai na segunda seguinte", quando.strftime("%d/%m %H:%M") == "14/09 07:30")
+        check("a repeticao continua sendo 'uteis'", marcada["repetir"] == "uteis")
+
+        # Numa quarta, o comportamento normal nao muda.
+        server._agora = lambda: datetime(2026, 9, 9, 6, 0, tzinfo=server._fuso_local())
+        os.remove(server.TAREFAS_FILE)
+        server.tool_agendar("academia", "dias uteis 7h30")
+        outra = json.load(open(server.TAREFAS_FILE, encoding="utf-8"))["tarefas"][0]
+        check("dia util comum fica no mesmo dia",
+              datetime.fromisoformat(outra["quando"]).strftime("%d/%m") == "09/09")
+    finally:
+        server.TAREFAS_FILE, server.DATA_DIR, server._agora = guardado
+        shutil.rmtree(pasta, ignore_errors=True)
+
+
+def testa_medida_da_tela():
+    print("\nMedida da tela no deslizar:")
+    guardado = server._shell
+    chamadas = []
+
+    def shell_falso(comando, **kwargs):
+        chamadas.append(comando)
+        if "wm size" in comando:
+            # O aparelho com resolucao reduzida: o swipe usa a Override.
+            return "Physical size: 1440x3120\nOverride size: 1080x2340"
+        return ""
+
+    server._shell = shell_falso
+    try:
+        server.tool_deslizar("baixo")
+        swipe = [c for c in chamadas if "swipe" in c][0]
+        check("usa a Override, nao a Physical", "540 1950 540 390" in swipe)
+        check("nao usou a medida fisica (1440x3120)", "720 2600" not in swipe)
+
+        chamadas.clear()
+        server._shell = lambda c, **k: (chamadas.append(c),
+                                        "Physical size: 1080x2400")[1]
+        server.tool_deslizar("baixo")
+        swipe = [c for c in chamadas if "swipe" in c][0]
+        check("sem Override, usa a Physical", "540 2000 540 400" in swipe)
+    finally:
+        server._shell = guardado
+
+
 def testa_memoria():
     print("\nMemoria (lembrar/recordar/esquecer):")
     antes = server._load_memory()
@@ -906,6 +1016,9 @@ def main():
     testa_semantica()
     testa_instrucoes()
     testa_ferramentas_novas()
+    testa_limites_e_escapes()
+    testa_dias_uteis()
+    testa_medida_da_tela()
     testa_memoria()
     testa_cli()
     if FALHAS:

@@ -24,10 +24,11 @@ ferramentas() {
 }
 
 falar() {
-    # A fala fica melhor sem marcacao de markdown no meio.
-    printf '%s' "$1" | sed 's/[*_`#]//g' | head -c 900 | while read -r linha; do
-        termux-tts-speak "$linha" 2>/dev/null || true
-    done
+    # A fala fica melhor sem marcacao de markdown no meio. O texto vai pela
+    # entrada padrao: montar um laco com 'read' engolia a ultima linha, que
+    # numa resposta de uma linha so era a resposta inteira.
+    printf '%s\n' "$1" | sed 's/[*_`#]//g' | head -c 900 \
+        | termux-tts-speak 2>/dev/null || true
 }
 
 rodada() {
@@ -69,10 +70,16 @@ case "$1" in
         chmod +x "$HOME/.termux/tasker/assistente"
         echo "Gancho do Tasker criado em ~/.termux/tasker/assistente."
 
-        termux-notification --ongoing --id faztudo \
+        # Opcional: sem o Termux:API isto falha, e nao pode derrubar o resto.
+        if termux-notification --ongoing --id faztudo \
             -t "faztudo" -c "toque em Falar para conversar" \
-            --button1 "Falar" --button1-action "sh $AQUI/assistente.sh" \
-            2>/dev/null && echo "Notificacao fixa criada, com botao Falar."
+            --button1 "Falar" --button1-action "sh $AQUI/assistente.sh" 2>/dev/null
+        then
+            echo "Notificacao fixa criada, com botao Falar."
+        else
+            echo "Sem a notificacao fixa (o Termux:API respondeu?)."
+            echo "O widget e o terminal continuam funcionando."
+        fi
         ;;
     --remover)
         termux-notification-remove faztudo 2>/dev/null || true

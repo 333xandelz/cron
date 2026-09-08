@@ -805,6 +805,12 @@ def tool_clima(cidade, formato="curto"):
     return _corpo_http(url, headers={"User-Agent": "curl/8.0"}).strip()
 
 
+def _fatorial(n):
+    if n > 1000:
+        raise ValueError("fatorial de %s e grande demais (limite 1000)" % n)
+    return math.factorial(n)
+
+
 @tool(
     "calcular",
     "Avalia uma expressao matematica e devolve o resultado. Aceita + - * / "
@@ -826,7 +832,7 @@ def tool_calcular(expressao):
         "exp": math.exp, "sin": math.sin, "cos": math.cos, "tan": math.tan,
         "asin": math.asin, "acos": math.acos, "atan": math.atan,
         "floor": math.floor, "ceil": math.ceil, "fabs": math.fabs,
-        "factorial": math.factorial, "hypot": math.hypot, "degrees": math.degrees,
+        "factorial": _fatorial, "hypot": math.hypot, "degrees": math.degrees,
         "radians": math.radians, "abs": abs, "round": round, "min": min,
         "max": max, "sum": sum, "pow": pow,
     }
@@ -874,8 +880,24 @@ _OPERADORES = {
     ast.Div: lambda a, b: a / b,
     ast.FloorDiv: lambda a, b: a // b,
     ast.Mod: lambda a, b: a % b,
-    ast.Pow: lambda a, b: a ** b,
+    ast.Pow: lambda a, b: _potencia(a, b),
 }
+
+
+def _potencia(base, expoente):
+    """Potencia com limite: o servidor e uma linha so, nao pode travar."""
+    if abs(expoente) > 1000:
+        raise ValueError(
+            "expoente alto demais (%s); o limite e 1000, senao a conta trava "
+            "o servidor" % expoente
+        )
+    if base and abs(base) > 1:
+        digitos = abs(expoente) * math.log10(abs(base))
+        if digitos > 5000:
+            raise ValueError(
+                "o resultado teria umas %d casas; nao vou calcular isso" % digitos
+            )
+    return base ** expoente
 
 
 # Os nomes IANA sao em ingles; quem pergunta escreve em portugues.
@@ -1062,6 +1084,10 @@ def tool_agendar(o_que, quando, repetir=None):
         raise ValueError("repetir aceita: %s" % ", ".join(REPETICOES))
 
     momento = _interpretar_quando(texto or str(quando), agora)
+    # "dias uteis 7h30" numa sexta a noite caia no sabado sem isto.
+    if repeticao == "uteis":
+        while momento.weekday() >= 5:
+            momento += timedelta(days=1)
     dados = _load_tarefas()
     tarefa = {
         "id": dados["proximo_id"],
@@ -1512,7 +1538,9 @@ def tool_botao(qual):
 )
 def tool_deslizar(direcao, duracao=300):
     tamanho = _shell("wm size")
-    medida = re.search(r"(\d+)x(\d+)", tamanho)
+    # Havendo Override, e ela que vale: o input swipe usa esse espaco.
+    medida = (re.search(r"Override size:\s*(\d+)x(\d+)", tamanho)
+              or re.search(r"(\d+)x(\d+)", tamanho))
     if not medida:
         raise RuntimeError("nao consegui medir a tela: %s" % tamanho)
     largura, altura = int(medida.group(1)), int(medida.group(2))
@@ -1542,9 +1570,18 @@ def tool_deslizar(direcao, duracao=300):
 )
 def tool_captura(nome=None):
     os.makedirs(CAPTURAS, exist_ok=True)
-    arquivo = os.path.join(
-        CAPTURAS, nome or ("tela-%s.png" % _agora().strftime("%Y%m%d-%H%M%S"))
-    )
+    if nome:
+        # So o nome do arquivo: ".." ou caminho absoluto sairiam da pasta.
+        seguro = os.path.basename(nome.strip()) or ""
+        if not re.match(r"^[A-Za-z0-9._-]+$", seguro) or seguro.startswith("."):
+            raise ValueError(
+                "nome invalido: %r. Use letras, numeros, ponto, hifen." % nome
+            )
+        if not seguro.lower().endswith(".png"):
+            seguro += ".png"
+    else:
+        seguro = "tela-%s.png" % _agora().strftime("%Y%m%d-%H%M%S")
+    arquivo = os.path.join(CAPTURAS, seguro)
     if not _tem("adb"):
         raise RuntimeError("adb nao encontrado — %s" % AJUDA_ADB)
     imagem = _adb("exec-out", "screencap", "-p", timeout=60, binario=True)
@@ -1592,6 +1629,10 @@ def tool_abrir(o_que):
             )
         pacote = sorted(candidatos, key=len)[0]
 
+    # O nome vai cru para o shell do aparelho: so aceita o que e nome de
+    # pacote de verdade, senao "com.x; rm -rf ..." viraria dois comandos.
+    if not re.match(r"^[A-Za-z0-9_](?:[A-Za-z0-9_.]*[A-Za-z0-9_])?$", pacote):
+        raise ValueError("nome de pacote invalido: %r" % pacote)
     _shell("monkey -p %s -c android.intent.category.LAUNCHER 1" % pacote)
     return "Abri %s" % pacote
 

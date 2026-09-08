@@ -44,7 +44,7 @@
       "mcp__faztudo__lanterna",
       "mcp__faztudo__volume",
       "Bash(python3 test_server.py)",
-      "Bash(python3 server.py *)",
+      "Bash(python3 server.py --tools)",
       "Bash(sh instalar.sh*)",
       "Bash(sh preparar-celular.sh*)",
       "Bash(sh assistente.sh*)",
