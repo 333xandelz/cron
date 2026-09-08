@@ -75,8 +75,10 @@ case "$1" in
         chmod +x "$HOME/.termux/tasker/assistente"
         echo "Gancho do Tasker criado em ~/.termux/tasker/assistente."
 
-        # Opcional: sem o Termux:API isto falha, e nao pode derrubar o resto.
-        if termux-notification --ongoing --id faztudo \
+        # Opcional: sem o app Termux:API instalado isto falha — ou pior, fica
+        # pendurado esperando uma resposta que nunca vem. O timeout garante
+        # que o preparo termina de um jeito ou de outro.
+        if timeout 20 termux-notification --ongoing --id faztudo \
             -t "faztudo" -c "toque em Falar para conversar" \
             --button1 "Falar" --button1-action "sh $AQUI/assistente.sh" 2>/dev/null
         then
