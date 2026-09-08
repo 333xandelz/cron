@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "faztudo"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0"
 
 # O protocolo deixa o servidor mandar orientacao junto do initialize. E o
 # lugar de dizer o que nenhuma descricao de ferramenta sozinha diz: como as
@@ -1643,6 +1643,370 @@ def tool_enviar_sms(numero, texto):
         raise ValueError("numero curto demais para ser real: %s" % numero)
     _termux("termux-sms-send", "-n", limpo, texto, timeout=60)
     return "SMS enviado para %s." % limpo
+
+
+# ---------------------------------------------------------------------- voz
+
+
+def _json_termux(programa, *args, **kwargs):
+    """Roda um termux-* que devolve JSON e entrega ja decodificado."""
+    saida = _termux(programa, *args, **kwargs)
+    try:
+        return json.loads(saida) if saida.strip() else {}
+    except ValueError:
+        raise RuntimeError("%s nao devolveu JSON: %s" % (programa, saida[:200]))
+
+
+@tool(
+    "ouvir",
+    "Abre o reconhecimento de voz do aparelho e devolve o que a pessoa "
+    "falar. Use quando pedirem para 'ouvir', 'escutar', ou quando a conversa "
+    "estiver acontecendo por voz. Para falar e ouvir a resposta numa so "
+    "chamada, use 'perguntar'.",
+    {"aviso": {"type": "string", "description": "Frase a falar antes de escutar"}},
+)
+def tool_ouvir(aviso=None):
+    if aviso:
+        _termux("termux-tts-speak", aviso, timeout=60)
+    falado = _termux("termux-speech-to-text", timeout=120).strip()
+    if not falado:
+        return "(nao ouvi nada)"
+    return falado
+
+
+@tool(
+    "perguntar",
+    "Fala uma pergunta em voz alta e devolve, em texto, o que a pessoa "
+    "responder falando. E a ida e volta completa por voz — use no modo "
+    "assistente, quando a pessoa esta de maos ocupadas.",
+    {
+        "pergunta": {"type": "string", "description": "O que falar"},
+        "velocidade": {"type": "number", "description": "1.0 e o normal"},
+    },
+    ["pergunta"],
+)
+def tool_perguntar(pergunta, velocidade=1.0):
+    _termux("termux-tts-speak", "-r", str(velocidade), pergunta, timeout=60)
+    resposta = _termux("termux-speech-to-text", timeout=120).strip()
+    if not resposta:
+        return "Perguntei '%s' e nao veio resposta." % pergunta
+    return "Perguntei: %s\nResponderam: %s" % (pergunta, resposta)
+
+
+@tool(
+    "dialogo",
+    "Pergunta algo numa caixa de dialogo nativa do Android e espera a "
+    "resposta. Use quando precisar de confirmacao antes de algo irreversivel, "
+    "ou de um dado que nao da para adivinhar. Diferente de 'perguntar', que "
+    "usa voz.",
+    {
+        "titulo": {"type": "string", "description": "A pergunta"},
+        "tipo": {
+            "type": "string",
+            "description": "'texto' (padrao), 'confirmar' (sim/nao) ou 'senha'",
+        },
+    },
+    ["titulo"],
+)
+def tool_dialogo(titulo, tipo="texto"):
+    formatos = {"texto": ["text"], "confirmar": ["confirm"], "senha": ["text", "-p"]}
+    if tipo not in formatos:
+        raise ValueError("tipo aceita: %s" % ", ".join(formatos))
+    dados = _json_termux("termux-dialog", *(formatos[tipo] + ["-t", titulo]), timeout=300)
+    if dados.get("code", 0) < 0:
+        return "A pessoa cancelou o dialogo."
+    return str(dados.get("text", "")).strip() or "(resposta vazia)"
+
+
+# ----------------------------------------------------------------- aparelho
+
+
+@tool(
+    "estado",
+    "Como o aparelho esta agora: bateria, carregamento, wi-fi e volume. Use "
+    "para 'quanto de bateria tenho?', 'estou no wi-fi?', ou antes de comecar "
+    "algo demorado que dependa de carga.",
+)
+def tool_estado():
+    partes = []
+
+    def tentar(rotulo, funcao):
+        try:
+            partes.append("%s: %s" % (rotulo, funcao()))
+        except Exception as exc:
+            partes.append("%s: (indisponivel: %s)" % (rotulo, exc))
+
+    def bateria():
+        d = _json_termux("termux-battery-status")
+        estado = {"CHARGING": "carregando", "FULL": "cheia",
+                  "DISCHARGING": "na bateria"}.get(d.get("status"), d.get("status", "?"))
+        temperatura = d.get("temperature")
+        return "%s%% (%s%s)" % (
+            d.get("percentage", "?"), estado,
+            ", %.0f C" % temperatura if isinstance(temperatura, (int, float)) else "")
+
+    def wifi():
+        d = _json_termux("termux-wifi-connectioninfo")
+        rede = (d.get("ssid") or "").strip('"')
+        if not rede or rede == "<unknown ssid>":
+            return "desconectado"
+        return "%s (%s dBm)" % (rede, d.get("rssi", "?"))
+
+    def volume():
+        dados = _json_termux("termux-volume")
+        if isinstance(dados, list):
+            return ", ".join(
+                "%s %s/%s" % (v.get("stream"), v.get("volume"), v.get("max_volume"))
+                for v in dados if v.get("stream") in ("music", "ring", "notification")
+            )
+        return str(dados)
+
+    tentar("Bateria", bateria)
+    tentar("Wi-Fi", wifi)
+    tentar("Volume", volume)
+    return "\n".join(partes)
+
+
+@tool(
+    "localizacao",
+    "Onde o aparelho esta agora, em coordenadas. Use para 'onde estou?' ou "
+    "quando algo depender do lugar. Pode demorar alguns segundos e exige a "
+    "permissao de localizacao concedida ao Termux:API.",
+    {
+        "precisao": {
+            "type": "string",
+            "description": "'rede' (rapida, padrao) ou 'gps' (precisa, mais lenta)",
+        }
+    },
+)
+def tool_localizacao(precisao="rede"):
+    provedores = {"rede": "network", "gps": "gps"}
+    if precisao not in provedores:
+        raise ValueError("precisao aceita: rede, gps")
+    d = _json_termux("termux-location", "-p", provedores[precisao], timeout=120)
+    if not d.get("latitude"):
+        raise RuntimeError("nao consegui obter a localizacao (permissao? GPS ligado?)")
+    return "%.6f, %.6f (precisao ~%sm, %s)\nhttps://maps.google.com/?q=%s,%s" % (
+        d["latitude"], d["longitude"], d.get("accuracy", "?"),
+        d.get("provider", precisao), d["latitude"], d["longitude"],
+    )
+
+
+@tool(
+    "contatos",
+    "Procura na agenda de contatos do celular. Use antes de 'ligar' ou "
+    "'enviar_sms' quando a pessoa disser um nome em vez de um numero.",
+    {"nome": {"type": "string", "description": "Parte do nome (omita para listar)"}},
+)
+def tool_contatos(nome=None):
+    lista = _json_termux("termux-contact-list", timeout=60)
+    if not isinstance(lista, list):
+        raise RuntimeError("termux-contact-list devolveu algo inesperado")
+    if nome:
+        procurado = _sem_acento(nome)
+        lista = [c for c in lista if procurado in _sem_acento(c.get("name", ""))]
+    if not lista:
+        return "Nenhum contato%s." % (" com '%s'" % nome if nome else "")
+    linhas = ["- %s: %s" % (c.get("name", "?"), c.get("number", "?"))
+              for c in lista[:40]]
+    extra = "\n(+%d contatos)" % (len(lista) - 40) if len(lista) > 40 else ""
+    return "\n".join(linhas) + extra
+
+
+@tool(
+    "ligar",
+    "Faz uma ligacao telefonica de verdade. Use so quando pedirem "
+    "explicitamente para ligar. Se vier um nome em vez de numero, procure "
+    "antes em 'contatos' e confirme qual e — ligar para o numero errado nao "
+    "tem como desfazer.",
+    {"numero": {"type": "string", "description": "Numero de telefone"}},
+    ["numero"],
+)
+def tool_ligar(numero):
+    limpo = re.sub(r"[^\d+]", "", numero)
+    if len(re.sub(r"\D", "", limpo)) < 8:
+        raise ValueError("numero curto demais para ser real: %s" % numero)
+    _termux("termux-telephony-call", limpo, timeout=60)
+    return "Ligando para %s." % limpo
+
+
+@tool(
+    "mensagens",
+    "Le os SMS recebidos. Use para 'chegou alguma mensagem?', 'me le o "
+    "codigo que chegou', 'o que o banco mandou?'.",
+    {
+        "quantidade": {"type": "number", "description": "Quantas ler (padrao 10)"},
+        "de": {"type": "string", "description": "Filtrar por remetente"},
+    },
+)
+def tool_mensagens(quantidade=10, de=None):
+    lista = _json_termux("termux-sms-list", "-l", str(int(quantidade)),
+                         "-t", "inbox", timeout=60)
+    if not isinstance(lista, list):
+        raise RuntimeError("termux-sms-list devolveu algo inesperado")
+    if de:
+        procurado = _sem_acento(de)
+        lista = [m for m in lista
+                 if procurado in _sem_acento(str(m.get("number", "")))
+                 or procurado in _sem_acento(str(m.get("sender", "")))]
+    if not lista:
+        return "Nenhuma mensagem%s." % (" de '%s'" % de if de else "")
+    linhas = []
+    for m in lista:
+        quem = m.get("sender") or m.get("number") or "?"
+        linhas.append("- %s (%s): %s" % (quem, m.get("received", "?"),
+                                         (m.get("body") or "").strip()))
+    return "\n".join(linhas)
+
+
+@tool(
+    "foto",
+    "Tira uma foto com a camera e salva num arquivo. Use para 'tira uma "
+    "foto', ou quando precisar ver algo do mundo — diferente de 'captura', "
+    "que fotografa a tela.",
+    {"camera": {"type": "string", "description": "'tras' (padrao) ou 'frente'"}},
+)
+def tool_foto(camera="tras"):
+    ids = {"tras": "0", "frente": "1"}
+    if camera not in ids:
+        raise ValueError("camera aceita: tras, frente")
+    os.makedirs(CAPTURAS, exist_ok=True)
+    arquivo = os.path.join(CAPTURAS, "foto-%s.jpg" % _agora().strftime("%Y%m%d-%H%M%S"))
+    _termux("termux-camera-photo", "-c", ids[camera], arquivo, timeout=120)
+    if not os.path.exists(arquivo):
+        raise RuntimeError("a camera nao gerou arquivo (permissao concedida?)")
+    return "Foto salva em %s (%d KB)" % (arquivo, os.path.getsize(arquivo) // 1024)
+
+
+@tool(
+    "lanterna",
+    "Liga ou desliga a lanterna do celular. Use para 'acende a luz', 'liga a "
+    "lanterna' — e lembre de desligar depois, porque ela come bateria e nao "
+    "apaga sozinha.",
+    {"ligar": {"type": "boolean", "description": "true liga, false desliga"}},
+    ["ligar"],
+)
+def tool_lanterna(ligar):
+    _termux("termux-torch", "on" if ligar else "off")
+    return "Lanterna %s." % ("ligada" if ligar else "desligada")
+
+
+@tool(
+    "volume",
+    "Ajusta o volume do aparelho. Use para 'abaixa o som', 'poe no maximo', "
+    "'silencia'. Sem 'nivel', so mostra como esta.",
+    {
+        "qual": {"type": "string", "description": "music (padrao), ring, notification, alarm"},
+        "nivel": {"type": "number", "description": "0 ate o maximo do aparelho"},
+    },
+)
+def tool_volume(qual="music", nivel=None):
+    canais = ("music", "ring", "notification", "alarm", "system", "call")
+    if qual not in canais:
+        raise ValueError("qual aceita: %s" % ", ".join(canais))
+    if nivel is None:
+        return tool_estado()
+    _termux("termux-volume", qual, str(int(nivel)))
+    return "Volume de %s em %d." % (qual, int(nivel))
+
+
+@tool(
+    "apps",
+    "Lista os aplicativos instalados no aparelho. Use quando a pessoa citar "
+    "um app e voce nao souber o nome do pacote para 'abrir'.",
+    {"filtro": {"type": "string", "description": "Parte do nome"}},
+)
+def tool_apps(filtro=None):
+    saida = _shell("pm list packages -3")
+    pacotes = sorted(
+        linha.split(":", 1)[-1].strip()
+        for linha in saida.splitlines() if linha.strip().startswith("package:")
+    )
+    if filtro:
+        procurado = _sem_acento(filtro)
+        pacotes = [p for p in pacotes if procurado in _sem_acento(p)]
+    if not pacotes:
+        return "Nenhum app%s." % (" com '%s'" % filtro if filtro else "")
+    extra = "\n(+%d apps)" % (len(pacotes) - 60) if len(pacotes) > 60 else ""
+    return "\n".join("- " + p for p in pacotes[:60]) + extra
+
+@tool(
+    "fluxo",
+    "Executa varios passos de uma vez no celular, um por linha. Use para "
+    "tarefas de varios toques ('manda uma mensagem pra Ana no whatsapp') em "
+    "vez de chamar tocar/digitar um por um — e muito mais rapido. Para no "
+    "primeiro erro e conta o que fez ate ali. Verbos aceitos: abrir, tocar, "
+    "digitar, enviar (digita e aperta Enter), botao, deslizar, esperar, "
+    "tela, captura.",
+    {
+        "passos": {
+            "type": "string",
+            "description": "Um passo por linha. Ex:\\n"
+            "abrir whatsapp\\nesperar 2\\ntocar Ana\\nenviar oi, tudo bem?",
+        },
+        "parar_no_erro": {
+            "type": "boolean",
+            "description": "Parar no primeiro erro (padrao: sim)",
+        },
+    },
+    ["passos"],
+)
+def tool_fluxo(passos, parar_no_erro=True):
+    verbos = {
+        "abrir": lambda arg: tool_abrir(arg),
+        "tocar": lambda arg: tool_tocar(arg),
+        "digitar": lambda arg: tool_digitar(arg),
+        "enviar": lambda arg: tool_digitar(arg, enviar=True),
+        "botao": lambda arg: tool_botao(arg),
+        "deslizar": lambda arg: tool_deslizar(arg or "baixo"),
+        "tela": lambda arg: tool_tela(arg or None),
+        "captura": lambda arg: tool_captura(arg or None),
+        "esperar": None,  # tratado a parte: nao e ferramenta
+    }
+
+    linhas = [l.strip() for l in passos.splitlines() if l.strip()]
+    if not linhas:
+        raise ValueError("nenhum passo. Escreva um por linha, ex: 'abrir whatsapp'")
+
+    relato = []
+    for numero, linha in enumerate(linhas, 1):
+        verbo, _, argumento = linha.partition(" ")
+        verbo = _sem_acento(verbo).strip()
+        argumento = argumento.strip()
+
+        if verbo not in verbos:
+            erro = "passo %d: nao conheco o verbo '%s'. Aceito: %s" % (
+                numero, verbo, ", ".join(sorted(verbos)))
+            relato.append("x " + erro)
+            if parar_no_erro:
+                return "\n".join(relato)
+            continue
+
+        try:
+            if verbo == "esperar":
+                segundos = float(argumento or 1)
+                if not 0 < segundos <= 60:
+                    raise ValueError("espera entre 0 e 60 segundos")
+                time.sleep(segundos)
+                resultado = "esperei %gs" % segundos
+            else:
+                if not argumento and verbo in ("abrir", "tocar", "digitar",
+                                               "enviar", "botao"):
+                    raise ValueError("'%s' precisa de um argumento" % verbo)
+                resultado = verbos[verbo](argumento)
+        except Exception as exc:
+            relato.append("x passo %d (%s): %s" % (numero, linha, exc))
+            if parar_no_erro:
+                relato.append(
+                    "\nParei aqui. Chame 'tela' para ver como o aparelho ficou.")
+                return "\n".join(relato)
+            continue
+
+        primeira = str(resultado).splitlines()[0] if str(resultado) else "ok"
+        relato.append("%d. %s -> %s" % (numero, linha, primeira))
+
+    relato.append("\n%d passos executados." % len(linhas))
+    return "\n".join(relato)
 
 
 # ---------------------------------------------------------------- protocolo

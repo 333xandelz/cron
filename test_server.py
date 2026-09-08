@@ -81,7 +81,7 @@ def testa_protocolo():
     check("initialize ecoa a versao do cliente",
           r[1]["result"]["protocolVersion"] == "2025-06-18")
     check("ping responde vazio", r[5]["result"] == {})
-    check("tools/list lista ferramentas", len(r[2]["result"]["tools"]) >= 31)
+    check("tools/list lista ferramentas", len(r[2]["result"]["tools"]) >= 44)
     check("toda ferramenta tem inputSchema",
           all("inputSchema" in t for t in r[2]["result"]["tools"]))
     check("tools/list nao vaza a funcao python",
@@ -384,9 +384,34 @@ exit 0
 
 TERMUX_FALSO = r"""#!/bin/sh
 echo "__NOME__ $@" >> __LOG__
-echo copiado
+printf '%s\n' '__SAIDA__'
 exit 0
 """
+
+
+# Saidas que cada termux-* devolve no teste. As de JSON imitam o formato
+# real do termux-api; as outras so registram que foram chamadas.
+SAIDAS_TERMUX = {
+    "termux-battery-status":
+        '{"percentage": 72, "status": "CHARGING", "temperature": 31.4}',
+    "termux-wifi-connectioninfo":
+        '{"ssid": "\\"casa-5g\\"", "rssi": -47}',
+    "termux-volume":
+        '[{"stream":"music","volume":7,"max_volume":15},'
+        '{"stream":"ring","volume":5,"max_volume":7}]',
+    "termux-contact-list":
+        '[{"name":"Ana Paula","number":"+5581999991234"},'
+        '{"name":"Joao Oficina","number":"+5581988887777"}]',
+    "termux-sms-list":
+        '[{"sender":"Banco","number":"4004","received":"2026-09-08 09:10",'
+        '"body":"Seu codigo e 447293"}]',
+    "termux-location":
+        '{"latitude": -8.1137, "longitude": -34.8961, "accuracy": 18.0,'
+        ' "provider": "network"}',
+    "termux-dialog": '{"code": 0, "text": "sim"}',
+    "termux-speech-to-text": "que horas sao em tokyo",
+    "termux-clipboard-get": "texto copiado",
+}
 
 
 def android_falso():
@@ -401,20 +426,30 @@ def android_falso():
         fh.write(TELA_FALSA)
 
     programas = {"adb": ADB_FALSO.replace("__LOG__", log).replace("__XML__", xml)}
-    for programa in ("termux-notification", "termux-clipboard-set",
-                     "termux-clipboard-get", "termux-sms-send",
-                     "termux-tts-speak", "termux-open-url"):
-        programas[programa] = (
-            TERMUX_FALSO.replace("__NOME__", programa).replace("__LOG__", log)
-        )
+    termux = list(SAIDAS_TERMUX) + [
+        "termux-notification", "termux-clipboard-set", "termux-sms-send",
+        "termux-tts-speak", "termux-open-url", "termux-torch",
+        "termux-telephony-call", "termux-camera-photo",
+    ]
+    for programa in termux:
+        corpo = TERMUX_FALSO.replace("__NOME__", programa).replace("__LOG__", log)
+        saida = SAIDAS_TERMUX.get(programa, "ok")
+        programas[programa] = corpo.replace("__SAIDA__", saida.replace("'", "'\\''"))
 
     for nome, conteudo in programas.items():
         destino = os.path.join(pasta, nome)
         with open(destino, "w", encoding="utf-8") as fh:
             fh.write(conteudo)
         os.chmod(destino, os.stat(destino).st_mode | stat.S_IEXEC)
-    return pasta, log
 
+    # A camera precisa criar o arquivo que promete.
+    camera = os.path.join(pasta, "termux-camera-photo")
+    with open(camera, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\necho \"termux-camera-photo $@\" >> %s\n"
+                 "for a in \"$@\"; do case \"$a\" in *.jpg) printf fingido > \"$a\";; "
+                 "esac; done\nexit 0\n" % log)
+    os.chmod(camera, os.stat(camera).st_mode | stat.S_IEXEC)
+    return pasta, log
 
 def testa_celular():
     print("\nControle do celular (com um Android de mentira):")
@@ -507,6 +542,158 @@ def testa_celular():
     finally:
         os.environ["PATH"] = path_original
         server.CAPTURAS = capturas_original
+        shutil.rmtree(pasta, ignore_errors=True)
+
+
+def testa_voz_e_aparelho():
+    print("\nVoz e estado do aparelho (Android de mentira):")
+    pasta, log = android_falso()
+    path_original = os.environ["PATH"]
+    os.environ["PATH"] = pasta + os.pathsep + path_original
+    capturas_original = server.CAPTURAS
+    server.CAPTURAS = os.path.join(pasta, "capturas")
+
+    def chamadas():
+        try:
+            with open(log, encoding="utf-8") as fh:
+                return fh.read()
+        except FileNotFoundError:
+            return ""
+
+    def erro_de(funcao, *args, **kwargs):
+        try:
+            funcao(*args, **kwargs)
+            return ""
+        except Exception as exc:
+            return str(exc)
+
+    try:
+        check("ouvir devolve o que foi falado",
+              server.tool_ouvir() == "que horas sao em tokyo")
+        server.tool_ouvir(aviso="pode falar")
+        check("ouvir com aviso fala antes de escutar",
+              "termux-tts-speak pode falar" in chamadas())
+
+        resposta = server.tool_perguntar("tudo bem?", velocidade=1.2)
+        check("perguntar fala e devolve a resposta",
+              "tudo bem?" in resposta and "que horas sao em tokyo" in resposta)
+        check("perguntar respeita a velocidade da fala",
+              "termux-tts-speak -r 1.2" in chamadas())
+
+        check("dialogo devolve o texto respondido",
+              server.tool_dialogo("qual seu nome?") == "sim")
+        check("dialogo de texto usa o formato certo",
+              "termux-dialog text -t qual seu nome?" in chamadas())
+        server.tool_dialogo("confirma?", "confirmar")
+        check("dialogo de confirmacao usa o formato certo",
+              "termux-dialog confirm -t confirma?" in chamadas())
+        server.tool_dialogo("a senha", "senha")
+        check("dialogo de senha esconde o que se digita",
+              "termux-dialog text -p -t a senha" in chamadas())
+        check("dialogo com tipo invalido e recusado",
+              erro_de(server.tool_dialogo, "x", "telepatia") != "")
+
+        estado = server.tool_estado()
+        check("estado le a bateria", "72%" in estado and "carregando" in estado)
+        check("estado le a temperatura", "31 C" in estado)
+        check("estado le o wi-fi sem as aspas do ssid", "casa-5g (-47 dBm)" in estado)
+        check("estado le o volume", "music 7/15" in estado)
+
+        local = server.tool_localizacao()
+        check("localizacao devolve coordenadas", "-8.113700, -34.896100" in local)
+        check("localizacao monta o link do mapa", "maps.google.com" in local)
+        check("precisao invalida e recusada",
+              erro_de(server.tool_localizacao, "telepatia") != "")
+
+        contatos = server.tool_contatos("ana")
+        check("contatos filtra por nome",
+              "Ana Paula" in contatos and "Joao" not in contatos)
+        check("contatos sem resultado diz isso",
+              "Nenhum contato" in server.tool_contatos("zzz"))
+
+        server.tool_ligar("+55 (81) 99999-1234")
+        check("ligar limpa o numero",
+              "termux-telephony-call +5581999991234" in chamadas())
+        check("ligar recusa numero curto", erro_de(server.tool_ligar, "12") != "")
+
+        msgs = server.tool_mensagens(quantidade=5)
+        check("mensagens le o SMS recebido", "447293" in msgs)
+        check("mensagens passa o limite pedido", "termux-sms-list -l 5" in chamadas())
+        check("mensagens filtra por remetente",
+              "Banco" in server.tool_mensagens(de="banco")
+              and "Nenhuma" in server.tool_mensagens(de="ninguem"))
+
+        foto = server.tool_foto("frente")
+        check("foto usa a camera pedida", "termux-camera-photo -c 1" in chamadas())
+        check("foto confirma o arquivo criado", ".jpg" in foto)
+        check("camera invalida e recusada", erro_de(server.tool_foto, "lateral") != "")
+
+        server.tool_lanterna(True)
+        check("lanterna liga", "termux-torch on" in chamadas())
+        server.tool_lanterna(False)
+        check("lanterna desliga", "termux-torch off" in chamadas())
+
+        server.tool_volume("ring", 3)
+        check("volume ajusta o canal certo", "termux-volume ring 3" in chamadas())
+        check("canal invalido e recusado", erro_de(server.tool_volume, "sirene", 1) != "")
+
+        apps = server.tool_apps()
+        check("apps lista os pacotes de usuario", "com.exemplo.notas" in apps)
+        check("apps filtra", "whatsapp" in server.tool_apps("whats"))
+    finally:
+        os.environ["PATH"] = path_original
+        server.CAPTURAS = capturas_original
+        shutil.rmtree(pasta, ignore_errors=True)
+
+
+def testa_fluxo():
+    print("\nFluxo (varios passos numa chamada):")
+    pasta, log = android_falso()
+    path_original = os.environ["PATH"]
+    os.environ["PATH"] = pasta + os.pathsep + path_original
+
+    def chamadas():
+        try:
+            with open(log, encoding="utf-8") as fh:
+                return fh.read()
+        except FileNotFoundError:
+            return ""
+
+    try:
+        relato = server.tool_fluxo(
+            "abrir whatsapp\nesperar 0.1\ntocar Ana Paula\nenviar oi, tudo bem?"
+        )
+        check("fluxo executa todos os passos", "4 passos executados" in relato)
+        check("fluxo abre o app", "monkey -p com.whatsapp" in chamadas())
+        check("fluxo toca no elemento certo", "input tap 540 380" in chamadas())
+        check("fluxo digita e envia",
+              "input text oi," in chamadas() and "input keyevent 66" in chamadas())
+        check("fluxo numera o relato", "1. abrir whatsapp" in relato)
+
+        relato = server.tool_fluxo("tocar Ana Paula\ntocar NaoExiste\nbotao home")
+        check("fluxo para no primeiro erro", "Parei aqui" in relato)
+        check("fluxo nao executa o que vinha depois do erro",
+              "input keyevent 3" not in chamadas())
+        check("fluxo diz qual passo falhou", "passo 2" in relato)
+
+        relato = server.tool_fluxo("tocar NaoExiste\nbotao home", parar_no_erro=False)
+        check("fluxo pode seguir apesar do erro",
+              "input keyevent 3" in chamadas() and "2 passos executados" in relato)
+
+        relato = server.tool_fluxo("voar para marte")
+        check("verbo desconhecido e recusado com a lista", "nao conheco o verbo" in relato)
+        check("passo sem argumento e recusado",
+              "precisa de um argumento" in server.tool_fluxo("tocar"))
+        try:
+            server.tool_fluxo("  \n \n")
+            vazio_ok = False
+        except ValueError:
+            vazio_ok = True
+        check("fluxo sem nenhum passo levanta erro", vazio_ok)
+        check("espera longa demais e recusada",
+              "entre 0 e 60" in server.tool_fluxo("esperar 999"))
+    finally:
+        os.environ["PATH"] = path_original
         shutil.rmtree(pasta, ignore_errors=True)
 
 
@@ -686,6 +873,8 @@ def main():
     testa_agenda()
     testa_sincronizar()
     testa_celular()
+    testa_voz_e_aparelho()
+    testa_fluxo()
     testa_celular_ausente()
     testa_semantica()
     testa_instrucoes()

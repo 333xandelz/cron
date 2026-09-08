@@ -46,6 +46,19 @@ aparecem.
 | `falar` | Fala um texto em voz alta. |
 | `area_transferencia` | Lê ou escreve a área de transferência. |
 | `enviar_sms` | Manda um SMS de verdade pelo chip. |
+| `fluxo` | Vários passos numa chamada só — abrir, tocar, digitar, enviar. |
+| `ouvir` | Escuta pelo microfone e devolve o que foi falado. |
+| `perguntar` | Fala uma pergunta e devolve, em texto, a resposta falada. |
+| `dialogo` | Pergunta numa caixa nativa do Android e espera a resposta. |
+| `estado` | Bateria, wi-fi e volume agora. |
+| `localizacao` | Onde o aparelho está, com link do mapa. |
+| `contatos` | Procura na agenda do celular. |
+| `ligar` | Faz uma ligação de verdade. |
+| `mensagens` | Lê os SMS recebidos ("me lê o código que chegou"). |
+| `foto` | Tira uma foto com a câmera. |
+| `lanterna` | Liga e desliga a lanterna. |
+| `volume` | Ajusta o volume de cada canal. |
+| `apps` | Lista os aplicativos instalados. |
 | `lembrar` | Grava um fato, com etiquetas opcionais. |
 | `recordar` | Lê uma anotação pelo nome — e acha por aproximação se o nome não bater. |
 | `buscar` | Procura pelo conteúdo, atravessando anotações **e** tarefas. |
@@ -265,6 +278,7 @@ para fora (`clima`) é testada com um dublê no lugar do `http`.
 - `test_server.py` — testes
 - `instalar.sh` — registra o servidor para todos os seus projetos
 - `preparar-celular.sh` — instala e configura tudo no Termux
+- `assistente.sh` — o laço de voz: escuta, pensa, responde falando
 - `CELULAR.md` — como o Claude passa a operar o aparelho
 - `.mcp.json` — registra o servidor para este projeto
 - `.claude/settings.json` — marca o servidor como habilitado

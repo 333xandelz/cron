@@ -78,6 +78,44 @@ transferência, porque o `input text` do Android não dá conta de acentuação.
 Quando algo falhar, `celular` diz exatamente o que está faltando e como
 resolver.
 
+## Assistente de voz
+
+Isto substitui o assistente do sistema: você fala, o Claude decide o que
+fazer com as ferramentas do faztudo, e a resposta volta falada.
+
+```sh
+sh ~/faztudo/assistente.sh             # uma rodada
+sh ~/faztudo/assistente.sh --loop      # fica escutando até você dizer "parar"
+sh ~/faztudo/assistente.sh --instalar  # atalho na tela + notificação com botão
+```
+
+O `--instalar` cria duas formas de ativar sem abrir o terminal: um atalho em
+`~/.shortcuts` (que vira widget na tela inicial, via **Termux:Widget**) e uma
+notificação fixa com um botão **Falar**. Tocar em qualquer um dos dois abre o
+microfone.
+
+**Três ferramentas ficam de fora do modo voz, de propósito:** `run`, `ligar`
+e `enviar_sms`. Reconhecimento de voz erra, e um "liga pra Ana" mal ouvido
+não pode virar uma ligação de verdade — nem um comando de shell arbitrário.
+Elas continuam disponíveis quando você digita. Para liberá-las na voz, tire
+da linha `FORA=` no `assistente.sh`.
+
+## Fazer várias coisas de uma vez
+
+Uma ação por chamada fica lento quando a tarefa tem seis toques. O `fluxo`
+resolve a sequência inteira de uma vez:
+
+```
+abrir whatsapp
+esperar 2
+tocar Ana Paula
+enviar oi, tudo bem?
+```
+
+Ele para no primeiro erro e conta o que já tinha feito, para você saber em
+que estado o aparelho ficou — em vez de continuar tocando às cegas numa tela
+que não é mais a esperada.
+
 ## O que não dá para prometer
 
 Nada disto foi testado num aparelho real — não tenho um. O que está testado,
