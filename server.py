@@ -537,6 +537,18 @@ APPS_CONHECIDOS = {
     "ifood": "br.com.brainweb.ifood", "uber": "com.ubercab", "mercadolivre": "com.mercadolibre",
 }
 
+# Em que camada cada ferramenta vive. O que nao esta aqui funciona sempre,
+# so com o Termux — que e a maioria, e o que permite comecar com um app so.
+PRECISA_TERMUX_API = (
+    "area_transferencia", "contatos", "dialogo", "enviar_sms", "estado",
+    "falar", "foto", "lanterna", "ligar", "localizacao", "mensagens",
+    "notificar", "ouvir", "perguntar", "volume",
+)
+PRECISA_ADB = (
+    "abrir", "apps", "botao", "captura", "deslizar", "digitar", "fluxo",
+    "tela", "tocar",
+)
+
 AJUDA_TERMUX = (
     "isto precisa do Termux com a API instalada:\n"
     "  pkg install termux-api\n"
@@ -1401,10 +1413,29 @@ def tool_celular():
         else:
             linhas.append("adb: instalado, mas sem aparelho pareado — %s" % AJUDA_ADB)
 
-    linhas.append(
-        "\nCom termux-api: abrir, notificar, falar, area_transferencia, enviar_sms."
-        "\nCom adb: tela, tocar, digitar, deslizar, botao, captura."
-    )
+    # O mais util aqui e dizer o que JA da para fazer, nao so o que falta.
+    tem_api = bool(api)
+    tem_adb = _tem("adb") and bool(_aparelhos())
+    sempre = [n for n in TOOLS
+              if n not in PRECISA_TERMUX_API and n not in PRECISA_ADB]
+
+    disponiveis = len(sempre)
+    if tem_api:
+        disponiveis += len(PRECISA_TERMUX_API)
+    if tem_adb:
+        disponiveis += len(PRECISA_ADB)
+
+    linhas.append("\nFuncionam agora: %d de %d ferramentas." % (disponiveis, len(TOOLS)))
+    if not tem_api:
+        linhas.append(
+            "  +%d com o Termux:API: %s"
+            % (len(PRECISA_TERMUX_API), ", ".join(sorted(PRECISA_TERMUX_API))))
+    if not tem_adb:
+        linhas.append(
+            "  +%d com o adb pareado: %s"
+            % (len(PRECISA_ADB), ", ".join(sorted(PRECISA_ADB))))
+    if tem_api and tem_adb:
+        linhas.append("Nada faltando — tudo disponivel.")
     return "\n".join(linhas)
 
 

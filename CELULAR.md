@@ -46,6 +46,25 @@ diferente:
 - **Termux:Widget** — põe o atalho `Assistente` na tela inicial. Sem ele, o
   arquivo em `~/.shortcuts` existe mas não vira widget.
 
+## Comece com um app só
+
+Não precisa instalar tudo de uma vez. **Só com o Termux, sem nenhum
+complemento, 20 das 44 ferramentas já funcionam** — a agenda inteira, a
+memória, a busca, `calcular`, `hora`, `quando`, `senha`, `clima`, `cotacao`,
+`noticias` e o `sincronizar`. Dá para ter um assistente útil hoje e crescer
+depois.
+
+O que cada complemento acrescenta:
+
+| instale | ganha | exemplos |
+|---|---|---|
+| só **Termux** | 20 ferramentas | agenda, memória, busca, contas, cotação |
+| \+ **Termux:API** | +15 | voz, notificação, contatos, SMS, foto, localização |
+| \+ **adb pareado** | +9 | tocar, digitar, ler a tela, abrir apps, `fluxo` |
+
+A ferramenta `celular` conta isso a qualquer momento: quantas funcionam
+agora e o que falta para as outras.
+
 ## As duas camadas de permissão
 
 | Precisa de | Ferramentas | Como obter |

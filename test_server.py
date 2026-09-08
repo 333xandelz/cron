@@ -967,6 +967,45 @@ def testa_medida_da_tela():
         server._shell = guardado
 
 
+def testa_camadas():
+    print("\nCamadas de dependencia (o que funciona com o que):")
+    classificadas = set(server.PRECISA_TERMUX_API) | set(server.PRECISA_ADB)
+    check("nenhuma ferramenta listada duas vezes",
+          not (set(server.PRECISA_TERMUX_API) & set(server.PRECISA_ADB)))
+    check("toda ferramenta classificada existe",
+          classificadas <= set(server.TOOLS))
+
+    # As que sobram tem que rodar sem Termux:API e sem adb. Se alguem
+    # acrescentar uma ferramenta de celular sem classificar, isto pega.
+    import inspect
+    import re as _re
+    sozinhas = [n for n in server.TOOLS if n not in classificadas]
+    dependentes = []
+    for nome in sozinhas:
+        corpo = inspect.getsource(server.TOOLS[nome]["fn"])
+        if _re.search(r"\b_(adb|shell|termux|json_termux|ler_tela)\(", corpo):
+            dependentes.append(nome)
+    check("nenhuma ferramenta 'sempre disponivel' chama adb ou termux (%s)"
+          % (", ".join(dependentes) or "nenhuma"), not dependentes)
+
+    pasta = os.path.join(os.path.dirname(SERVER), "__sem_nada__")
+    os.makedirs(pasta, exist_ok=True)
+    path_original = os.environ["PATH"]
+    os.environ["PATH"] = pasta
+    try:
+        diagnostico = server.tool_celular()
+        check("diagnostico conta quantas funcionam agora",
+              "Funcionam agora: %d de %d" % (len(sozinhas), len(server.TOOLS))
+              in diagnostico)
+        check("diagnostico diz o que o Termux:API acrescenta",
+              "+%d com o Termux:API" % len(server.PRECISA_TERMUX_API) in diagnostico)
+        check("diagnostico diz o que o adb acrescenta",
+              "+%d com o adb pareado" % len(server.PRECISA_ADB) in diagnostico)
+    finally:
+        os.environ["PATH"] = path_original
+        shutil.rmtree(pasta, ignore_errors=True)
+
+
 def testa_memoria():
     print("\nMemoria (lembrar/recordar/esquecer):")
     antes = server._load_memory()
@@ -1019,6 +1058,7 @@ def main():
     testa_limites_e_escapes()
     testa_dias_uteis()
     testa_medida_da_tela()
+    testa_camadas()
     testa_memoria()
     testa_cli()
     if FALHAS:
